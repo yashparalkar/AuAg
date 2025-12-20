@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-aai.settings.api_key = os.getenv("AssemblyAI_API_Key")
+aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
 
 def transcribe(audio_file: str) -> str:
