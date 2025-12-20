@@ -1,0 +1,71 @@
+# --------------------
+# Python
+# --------------------
+venv/
+.env
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --------------------
+# Node / React
+# --------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+build/
+dist/
+.cache/
+
+# --------------------
+# Frontend environment files
+# --------------------
+frontend/.env
+frontend/.env.local
+frontend/.env.development
+frontend/.env.production
+google-console/
+token.json
+credentials.json
+credentials1.json
+
+# --------------------
+# Backend environment files
+# --------------------
+backend/.env
+backend/.env.local
+
+# --------------------
+# Media / generated files
+# --------------------
+*.wav
+*.mp3
+*.mp4
+*.log
+progress.txt
+
+# --------------------
+# OS / Editor
+# --------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --------------------
+# Misc
+# --------------------
+*.tmp
+*.swp
+
