@@ -1,14 +1,14 @@
 # app.py
 from flask import Flask, jsonify, request, session, redirect, send_from_directory
 from flask_cors import CORS
-from backend.gmail_oauth import GmailOAuthManager
+from gmail_oauth import GmailOAuthManager
 import secrets
-from backend.email_agent_service import generate_email_from_description
-from backend.info_extractor import EmailMediator
+from email_agent_service import generate_email_from_description
+from info_extractor import EmailMediator
 from werkzeug.middleware.proxy_fix import ProxyFix
 import os
 import tempfile
-from speech.transcriber import transcribe
+from transcriber import transcribe
 
 from backend.google_auth_web import (
     build_flow,
