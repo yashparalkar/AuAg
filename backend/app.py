@@ -64,12 +64,10 @@ CORS(
     origins=[
         "http://localhost:3000",
         "https://yourdomain.com",
-        "https://yourdomain.vercel.app"
+        "https://auag-assistant.vercel.app"
     ],
     supports_credentials=True
 )
-
-
 
 
 # Store Gmail manager instances per session

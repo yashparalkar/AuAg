@@ -3,9 +3,8 @@ import { Mail, Send, User, X, Check } from 'lucide-react';
 
 // const API_BASE = 'http://192.168.0.102:5001/api';
 // const API_BASE = 'http://localhost:5001/api';
-const API_BASE = 'https://tangela-fiery-bitterly.ngrok-free.dev/api';
-
-
+// const API_BASE = 'https://tangela-fiery-bitterly.ngrok-free.dev/api';
+const API_BASE = process.env.REACT_APP_API_BASE;
 
 const GmailComposeApp = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
