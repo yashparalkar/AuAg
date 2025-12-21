@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Mail, Send, User, X, Check } from 'lucide-react';
 
 // const API_BASE = 'http://192.168.0.102:5001/api';
@@ -33,6 +33,10 @@ const GmailComposeApp = () => {
   const [ccField, setCcField] = useState('');
   const [bccField, setBccField] = useState('');
   const [showCcBcc, setShowCcBcc] = useState(false);
+
+  const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
 
 
@@ -72,29 +76,96 @@ const GmailComposeApp = () => {
     }
   }, [showCompose]);
 
+  // const handleAudioToggle = async () => {
+  //   if (!isRecording) {
+  //     await fetch(`${API_BASE}/audio/start`, {
+  //       method: 'POST',
+  //       credentials: 'include'
+  //     });
+  //     setIsRecording(true);
+  //   } else {
+  //     const response = await fetch(`${API_BASE}/audio/stop`, {
+  //       method: 'POST',
+  //       credentials: 'include'
+  //     });
+
+  //     const data = await response.json();
+  //     if (data.success) {
+  //       // Send transcription to mediator
+  //       await fetch(`${API_BASE}/mediator/advance`, {
+  //         method: 'POST',
+  //         headers: { 'Content-Type': 'application/json' },
+  //         credentials: 'include',
+  //         body: JSON.stringify({ input: data.text })
+  //       });
+  //     }
+
+  //     setIsRecording(false);
+  //   }
+  // };
+
+
+
   const handleAudioToggle = async () => {
     if (!isRecording) {
-      await fetch(`${API_BASE}/audio/start`, {
-        method: 'POST',
-        credentials: 'include'
-      });
-      setIsRecording(true);
-    } else {
-      const response = await fetch(`${API_BASE}/audio/stop`, {
-        method: 'POST',
-        credentials: 'include'
+      // 1. Get microphone
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      // 2. Create recorder
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: "audio/webm"
       });
 
-      const data = await response.json();
-      if (data.success) {
-        // Send transcription to mediator
-        await fetch(`${API_BASE}/mediator/advance`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ input: data.text })
+      audioChunksRef.current = [];
+
+      // 3. Attach handlers BEFORE start
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, {
+          type: "audio/webm"
         });
-      }
+
+        const formData = new FormData();
+        formData.append("audio", audioBlob, "recording.webm");
+
+        const response = await fetch(`${API_BASE}/audio/transcribe`, {
+          method: "POST",
+          credentials: "include",
+          body: formData
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          await fetch(`${API_BASE}/mediator/advance`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ input: data.text })
+          });
+        }
+      };
+
+      // 4. Start recording
+      mediaRecorder.start();
+      mediaRecorderRef.current = mediaRecorder;
+      setIsRecording(true);
+
+    } else {
+      // 5. Stop recorder
+      mediaRecorderRef.current.stop();
+
+      // 6. Stop microphone tracks (CRITICAL)
+      streamRef.current.getTracks().forEach(track => track.stop());
+
+      mediaRecorderRef.current = null;
+      streamRef.current = null;
 
       setIsRecording(false);
     }
@@ -157,10 +228,6 @@ const GmailComposeApp = () => {
     }
 
   }, [mediatorState, prevMediatorState, toField]);
-
-
-
-
 
 
   const checkAuthStatus = async () => {

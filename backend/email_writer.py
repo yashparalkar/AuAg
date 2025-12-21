@@ -10,7 +10,7 @@ class EmailWriter:
     def __init__(self, api_key=None):
         """Initialize the Email Writer with OpenAI client."""
         # self.client = OpenAI(api_key = os.getenv("OPENAI_API_KEY"))
-        self.client = os.environ.get("OPENAI_API_KEY")
+        self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         self.system_prompt = """You are a professional email writing assistant. Your sole purpose is to generate well-crafted emails based on the user's requirements.
 
 ## Response Format

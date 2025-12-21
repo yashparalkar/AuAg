@@ -7,6 +7,8 @@ from backend.email_agent_service import generate_email_from_description
 from backend.info_extractor import EmailMediator
 from werkzeug.middleware.proxy_fix import ProxyFix
 import os
+import tempfile
+from speech.transcriber import transcribe
 
 from backend.google_auth_web import (
     build_flow,
@@ -15,12 +17,8 @@ from backend.google_auth_web import (
 )
 
 
-from speech.speech_controller import SpeechController
-
-speech_controller = SpeechController()
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRONTEND_BUILD_DIR = os.path.join(BASE_DIR, "frontend", "build")
+# BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# FRONTEND_BUILD_DIR = os.path.join(BASE_DIR, "frontend", "build")
 
 # app = Flask(
 #     __name__,
@@ -279,22 +277,23 @@ def mediator_state():
     return jsonify(mediator.json_state)
 
 
-@app.route('/api/audio/start', methods=['POST'])
-def start_audio():
-    started = speech_controller.start_recording()
-    return jsonify({ "started": started })
+@app.route("/api/audio/transcribe", methods=["POST"])
+def transcribe_audio():
+    if "audio" not in request.files:
+        return jsonify({"success": False, "error": "No audio file"}), 400
 
+    audio_file = request.files["audio"]
 
-@app.route('/api/audio/stop', methods=['POST'])
-def stop_audio():
-    text = speech_controller.stop_recording()
-    if text is None:
-        return jsonify({ "success": False, "error": "Not recording" }), 400
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+        audio_file.save(tmp.name)
+        audio_path = tmp.name
 
-    return jsonify({
-        "success": True,
-        "text": text
-    })
+    try:
+        text = transcribe(audio_path)
+        return jsonify({ "success": True, "text": text })
+    finally:
+        os.remove(audio_path)
+
 
 
 if __name__ == "__main__":
