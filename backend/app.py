@@ -34,7 +34,8 @@ from google_auth_web import (
 
 #     return send_from_directory(FRONTEND_BUILD_DIR, "index.html")
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
+
 
 app.config.update(
     SESSION_COOKIE_SAMESITE="None",
@@ -63,7 +64,6 @@ CORS(
     app,
     origins=[
         "http://localhost:3000",
-        "https://yourdomain.com",
         "https://auag-assistant.vercel.app"
     ],
     supports_credentials=True

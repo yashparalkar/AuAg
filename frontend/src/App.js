@@ -242,35 +242,6 @@ const GmailComposeApp = () => {
     }
   };
 
-
-  // const handleAuth = async () => {
-  //   setLoading(true);
-  //   setStatus('Authenticating...');
-  //   try {
-  //     // const response = await fetch(`${API_BASE}/auth/google/login`, {
-  //     //   method: 'POST',
-  //     //   credentials: 'include'
-  //     // });
-  //     const handleGoogleLogin = () => {
-  //       window.location.href = `${API_BASE}/auth/google/login`;
-  //     };
-
-  //     // const data = await response.json();
-  //     // if (data.success) {
-  //     //   setIsAuthenticated(true);
-  //     //   setUserEmail(data.email);
-  //     //   setStatus('Successfully authenticated!');
-  //     // } else {
-  //     //   setStatus('Authentication failed: ' + data.error);
-  //     // }
-  //   } catch (error) {
-  //     setStatus('Error: ' + error.message);
-  //   } finally {
-  //     setLoading(false);
-  //     setTimeout(() => setStatus(''), 3000);
-  //   }
-  // };
-
   const handleAuth = () => {
     setStatus('Redirecting to Google...');
     window.location.href = `${API_BASE}/auth/google/login`;
