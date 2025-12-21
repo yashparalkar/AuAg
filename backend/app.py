@@ -70,7 +70,6 @@ CORS(
 )
 
 
-# Store Gmail manager instances per session
 gmail_manager = None
 gmail_managers = {}
 
@@ -117,7 +116,8 @@ def google_callback():
     creds = flow.credentials
     session["google_creds"] = credentials_to_dict(creds)
 
-    return redirect("https://tangela-fiery-bitterly.ngrok-free.dev")
+    return redirect("https://auag-assistant.vercel.app")
+
 
 
 
