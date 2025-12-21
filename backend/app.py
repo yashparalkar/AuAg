@@ -10,7 +10,7 @@ import os
 import tempfile
 from transcriber import transcribe
 
-from backend.google_auth_web import (
+from google_auth_web import (
     build_flow,
     credentials_to_dict,
     get_gmail_service_from_session
