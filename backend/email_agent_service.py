@@ -1,4 +1,4 @@
-from backend.email_writer import EmailWriter
+from email_writer import EmailWriter
 
 # Create a single shared instance (optional but recommended)
 email_writer = EmailWriter()
