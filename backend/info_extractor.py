@@ -71,7 +71,8 @@ Behavior rules (strict):
 Be deterministic, conservative in inference, and focused on clarity and completeness.
 """
         
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = os.environ.get("OPENAI_API_KEY")
         self.json_state = {
             "recipient_name": None,
             "recipient_options": None,

@@ -22,20 +22,20 @@ speech_controller = SpeechController()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_BUILD_DIR = os.path.join(BASE_DIR, "frontend", "build")
 
-app = Flask(
-    __name__,
-    static_folder=os.path.join(FRONTEND_BUILD_DIR, "static"),
-    static_url_path="/static"
-)
+# app = Flask(
+#     __name__,
+#     static_folder=os.path.join(FRONTEND_BUILD_DIR, "static"),
+#     static_url_path="/static"
+# )
 
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def serve_react_app(path):
-    if path.startswith("api"):
-        return jsonify({"error": "Not found"}), 404
+# @app.route("/", defaults={"path": ""})
+# @app.route("/<path:path>")
+# def serve_react_app(path):
+#     if path.startswith("api"):
+#         return jsonify({"error": "Not found"}), 404
 
-    return send_from_directory(FRONTEND_BUILD_DIR, "index.html")
-
+#     return send_from_directory(FRONTEND_BUILD_DIR, "index.html")
+app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
 app.config.update(
@@ -52,14 +52,26 @@ app.wsgi_app = ProxyFix(
 
 
 # Configure CORS properly
+# CORS(
+#     app,
+#     origins=[
+#         "http://localhost:3000", 
+#         "http://192.168.0.102:3000"
+#         ],
+#     supports_credentials=True
+# )
+
 CORS(
     app,
     origins=[
-        "http://localhost:3000", 
-        "http://192.168.0.102:3000"
-        ],
+        "http://localhost:3000",
+        "https://yourdomain.com",
+        "https://yourdomain.vercel.app"
+    ],
     supports_credentials=True
 )
+
+
 
 
 # Store Gmail manager instances per session

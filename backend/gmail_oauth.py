@@ -2,7 +2,7 @@
 import os
 import json
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from email.mime.text import MIMEText
@@ -18,45 +18,98 @@ SCOPES = [
 
 
 class GmailOAuthManager:
-    def __init__(self, credentials_file='credentials.json', token_file='token.json'):
+    def __init__(self, credentials_file="credentials.json", token_file="token.json"):
         """
         Initialize Gmail OAuth Manager
-        
-        Args:
-            credentials_file: Path to OAuth 2.0 credentials JSON from Google Cloud Console
-            token_file: Path to save the token for persistence
+
+        credentials_file:
+            Ignored in production. ENV is used instead.
+        token_file:
+            Ignored (no token persistence).
         """
         self.credentials_file = credentials_file
         self.token_file = token_file
         self.creds = None
         self.service = None
-        
-    def authenticate(self):
-        if os.path.exists("token.json"):
-            print("Loading credentials from token file...")
-            self.creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
-        else:
-            print("No token file found, need to authenticate.")
-        
-        # If there are no (valid) credentials available, let the user log in.
-        if not self.creds or not self.creds.valid:
-            print("No valid credentials available, initiating OAuth flow...")
-            if self.creds and self.creds.expired and self.creds.refresh_token:
-                # Refresh expired credentials
-                self.creds.refresh(Request())
-            else:
-                # Run OAuth flow
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_file, SCOPES)
-                self.creds = flow.run_local_server(port=0)
-            
-            # Save the credentials for the next run
-            with open(self.token_file, 'w') as token:
-                token.write(self.creds.to_json())
-        
-        # Build Gmail service
-        self.service = build('gmail', 'v1', credentials=self.creds)
-        return True
+
+    # ------------------------------------------------------------------
+    # authenticate (name preserved)
+    # ------------------------------------------------------------------
+    def authenticate(self, redirect_uri=None, authorization_response=None):
+        """
+        Authentication flow entry point.
+
+        - redirect_uri is required in web deployments
+        - authorization_response is request.url from callback
+        """
+
+        # If credentials already exist and are valid, reuse them
+        if self.creds and self.creds.valid:
+            self.service = build("gmail", "v1", credentials=self.creds)
+            return True
+
+        # Refresh if possible
+        if self.creds and self.creds.expired and self.creds.refresh_token:
+            self.creds.refresh(Request())
+            self.service = build("gmail", "v1", credentials=self.creds)
+            return True
+
+        # Load client config from ENV (preferred)
+        client_config = self._load_client_config()
+
+        flow = Flow.from_client_config(
+            client_config=client_config,
+            scopes=SCOPES,
+            redirect_uri=redirect_uri
+        )
+
+        # Callback phase
+        if authorization_response:
+            flow.fetch_token(authorization_response=authorization_response)
+            self.creds = flow.credentials
+            self.service = build("gmail", "v1", credentials=self.creds)
+            return True
+
+        # Authorization start phase
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent"
+        )
+
+        # Caller must redirect user to this URL
+        return auth_url
+
+    # ------------------------------------------------------------------
+    # Internal helper (new, private)
+    # ------------------------------------------------------------------
+    def _load_client_config(self):
+        """
+        Load OAuth client configuration.
+
+        Priority:
+        1. GOOGLE_OAUTH_CREDENTIALS env var
+        2. credentials.json (local fallback)
+        """
+
+        credentials_env = os.getenv("GOOGLE_OAUTH_CREDENTIALS")
+        if credentials_env:
+            return json.loads(credentials_env)
+
+        # Local fallback (dev only)
+        if os.path.exists(self.credentials_file):
+            with open(self.credentials_file, "r") as f:
+                return json.load(f)
+
+        raise RuntimeError("OAuth client credentials not found")
+
+    # ------------------------------------------------------------------
+    # Gmail service getter
+    # ------------------------------------------------------------------
+    def get_service(self):
+        if not self.service:
+            raise RuntimeError("Gmail service not initialized. Call authenticate().")
+        return self.service
     
     def get_user_email(self):
         """Get the authenticated user's email address"""
