@@ -1,9 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mail, Send, User, X, Check } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock } from 'lucide-react';
 
-// const API_BASE = 'http://192.168.0.102:5001/api';
-// const API_BASE = 'http://localhost:5001/api';
-// const API_BASE = 'https://tangela-fiery-bitterly.ngrok-free.dev/api';
 const API_BASE = process.env.REACT_APP_API_BASE;
 
 const GmailComposeApp = () => {
@@ -18,16 +15,18 @@ const GmailComposeApp = () => {
   const [showCompose, setShowCompose] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Inbox states
+  const [currentView, setCurrentView] = useState('inbox'); // 'inbox', 'compose', 'message'
+  const [messages, setMessages] = useState([]);
+  const [selectedMessage, setSelectedMessage] = useState(null);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [nextPageToken, setNextPageToken] = useState(null);
+
   const [composeContext, setComposeContext] = useState(null);
-
   const [emailGenerated, setEmailGenerated] = useState(false);
-
   const [mediatorState, setMediatorState] = useState(null);
-
   const [prevMediatorState, setPrevMediatorState] = useState(null);
-
   const [isRecording, setIsRecording] = useState(false);
-
   const [ccField, setCcField] = useState('');
   const [bccField, setBccField] = useState('');
   const [showCcBcc, setShowCcBcc] = useState(false);
@@ -36,13 +35,85 @@ const GmailComposeApp = () => {
   const streamRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-
-
-
-
   useEffect(() => {
     checkAuthStatus();
   }, []);
+
+  // Load inbox when authenticated
+  useEffect(() => {
+    if (isAuthenticated && currentView === 'inbox') {
+      loadInbox();
+    }
+  }, [isAuthenticated, currentView]);
+
+  const loadInbox = async (pageToken = null) => {
+    setLoadingMessages(true);
+    try {
+      const url = pageToken 
+        ? `${API_BASE}/inbox/messages?pageToken=${pageToken}`
+        : `${API_BASE}/inbox/messages`;
+
+      const response = await fetch(url, {
+        credentials: 'include'
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setMessages(prev => pageToken ? [...prev, ...data.messages] : data.messages);
+        setNextPageToken(data.nextPageToken);
+      }
+    } catch (error) {
+      console.error('Failed to load inbox:', error);
+      setStatus('Failed to load messages');
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const loadMessageDetail = async (messageId) => {
+    try {
+      const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
+        credentials: 'include'
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setSelectedMessage(data.message);
+        setCurrentView('message');
+        
+        // Update unread status in list
+        setMessages(prev => prev.map(msg => 
+          msg.id === messageId ? { ...msg, isUnread: false } : msg
+        ));
+      }
+    } catch (error) {
+      console.error('Failed to load message:', error);
+    }
+  };
+
+  const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffTime = Math.abs(now - date);
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) {
+      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    } else if (diffDays === 1) {
+      return 'Yesterday';
+    } else if (diffDays < 7) {
+      return date.toLocaleDateString('en-US', { weekday: 'short' });
+    } else {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+  };
+
+  const extractSenderName = (fromString) => {
+    const match = fromString.match(/^([^<]+)</);
+    return match ? match[1].trim() : fromString.split('<')[0].trim();
+  };
 
   useEffect(() => {
     if (!showCompose) return;
@@ -74,23 +145,17 @@ const GmailComposeApp = () => {
     }
   }, [showCompose]);
 
-
-
-
   const handleAudioToggle = async () => {
     if (!isRecording) {
-      // 1. Get microphone
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      // 2. Create recorder
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "audio/webm"
       });
 
       audioChunksRef.current = [];
 
-      // 3. Attach handlers BEFORE start
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
@@ -123,27 +188,18 @@ const GmailComposeApp = () => {
         }
       };
 
-      // 4. Start recording
       mediaRecorder.start();
       mediaRecorderRef.current = mediaRecorder;
       setIsRecording(true);
 
     } else {
-      // 5. Stop recorder
       mediaRecorderRef.current.stop();
-
-      // 6. Stop microphone tracks (CRITICAL)
       streamRef.current.getTracks().forEach(track => track.stop());
-
       mediaRecorderRef.current = null;
       streamRef.current = null;
-
       setIsRecording(false);
     }
   };
-
-
-
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -163,7 +219,7 @@ const GmailComposeApp = () => {
       } catch (err) {
         console.error('Mediator polling failed', err);
       }
-    }, 1000); // 1s polling (adjust later)
+    }, 1000);
 
     return () => clearInterval(interval);
   }, [isAuthenticated]);
@@ -180,13 +236,6 @@ const GmailComposeApp = () => {
     }
 
     if (
-      mediatorState.recipient_options !== null &&
-      mediatorState.recipient_options !== prevMediatorState.recipient_options
-    ) {
-    
-    }
-
-    if (
       mediatorState.description &&
       mediatorState.description !== prevMediatorState.description
     ) {
@@ -194,7 +243,6 @@ const GmailComposeApp = () => {
     }
 
   }, [mediatorState, prevMediatorState, toField]);
-
 
   const checkAuthStatus = async () => {
     try {
@@ -213,7 +261,6 @@ const GmailComposeApp = () => {
     setStatus('Redirecting to Google...');
     window.location.href = `${API_BASE}/auth/google/login`;
   };
-
 
   const handleLogout = async () => {
     try {
@@ -254,7 +301,6 @@ const GmailComposeApp = () => {
     const timeoutId = setTimeout(searchContacts, 300);
     return () => clearTimeout(timeoutId);
   }, [toField]);
-
 
   useEffect(() => {
     if (!composeContext) return;
@@ -308,10 +354,6 @@ const GmailComposeApp = () => {
     generateEmail();
   }, [showCompose, mediatorState, emailGenerated]);
 
-
-
-
-
   const handleKeyDown = (e) => {
     if (suggestions.length === 0) return;
 
@@ -361,6 +403,7 @@ const GmailComposeApp = () => {
         setSubject('');
         setBody('');
         setShowCompose(false);
+        setCurrentView('inbox');
       } else {
         setStatus('Failed to send: ' + data.error);
       }
@@ -372,6 +415,14 @@ const GmailComposeApp = () => {
     }
   };
 
+  const handleCompose = () => {
+    setShowCompose(true);
+    setCurrentView('compose');
+    setToField('');
+    setSubject('');
+    setBody('');
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
@@ -380,8 +431,8 @@ const GmailComposeApp = () => {
             <div className="inline-block p-4 bg-blue-100 rounded-full mb-4">
               <Mail className="w-12 h-12 text-blue-600" />
             </div>
-            <h1 className="text-2xl font-bold text-gray-800 mb-2">Gmail Compose</h1>
-            <p className="text-gray-600">Authenticate with Google to compose and send emails</p>
+            <h1 className="text-2xl font-bold text-gray-800 mb-2">Gmail Assistant</h1>
+            <p className="text-gray-600">Authenticate with Google to access your inbox</p>
           </div>
           
           <button
@@ -405,7 +456,6 @@ const GmailComposeApp = () => {
           )}
         </div>
       </div>
-      
     );
   }
 
@@ -415,7 +465,7 @@ const GmailComposeApp = () => {
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Mail className="w-8 h-8 text-blue-600" />
-            <h1 className="text-xl font-semibold text-gray-800">Gmail Compose</h1>
+            <h1 className="text-xl font-semibold text-gray-800">Gmail Assistant</h1>
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -429,61 +479,197 @@ const GmailComposeApp = () => {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto p-6">
+      <main className="max-w-6xl mx-auto p-6">
         {status && (
-          
           <div className="mb-4 p-4 bg-green-50 border border-green-200 text-green-700 rounded-lg flex items-center gap-2">
             <Check className="w-5 h-5" />
             {status}
           </div>
         )}
-        {/* Mediator Panel */}
-        <div className="bg-white rounded-lg shadow p-4 mb-6">
-          <h3 className="text-md font-semibold text-gray-800 mb-3">
-            Mediator
-          </h3>
 
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={handleAudioToggle}
-              className={`flex-1 py-2 rounded-lg font-medium text-white transition-colors ${
-                isRecording
-                  ? 'bg-red-600 hover:bg-red-700'
-                  : 'bg-indigo-600 hover:bg-indigo-700'
-              }`}
-            >
-              {isRecording ? 'Stop Recording' : 'Record'}
-            </button>
+        {/* Voice Assistant Panel - Show when composing */}
+        {currentView === 'compose' && (
+          <div className="bg-white rounded-lg shadow p-4 mb-6">
+            <h3 className="text-md font-semibold text-gray-800 mb-3">
+              Voice Assistant
+            </h3>
+
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={handleAudioToggle}
+                className={`flex-1 py-2 rounded-lg font-medium text-white transition-colors ${
+                  isRecording
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                {isRecording ? 'Stop Recording' : 'Record'}
+              </button>
+            </div>
+
+            {mediatorState && (
+              <pre className="bg-gray-100 p-3 rounded-lg text-sm overflow-auto max-h-64">
+                {JSON.stringify(mediatorState, null, 2)}
+              </pre>
+            )}
           </div>
+        )}
 
-          {mediatorState && (
-            <pre className="bg-gray-100 p-3 rounded-lg text-sm overflow-auto max-h-64">
-              {JSON.stringify(mediatorState, null, 2)}
-            </pre>
-          )}
-        </div>
+        {/* Inbox View */}
+        {currentView === 'inbox' && (
+          <div className="bg-white rounded-lg shadow-lg">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <div className="flex items-center gap-2">
+                <Inbox className="w-5 h-5 text-gray-600" />
+                <h2 className="text-lg font-semibold text-gray-800">Inbox</h2>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => loadInbox()}
+                  disabled={loadingMessages}
+                  className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  onClick={handleCompose}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors inline-flex items-center gap-2"
+                >
+                  <Mail className="w-4 h-4" />
+                  Compose
+                </button>
+              </div>
+            </div>
 
+            <div className="divide-y divide-gray-200">
+              {loadingMessages && messages.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-2" />
+                  Loading messages...
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No messages found
+                </div>
+              ) : (
+                <>
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      onClick={() => loadMessageDetail(message.id)}
+                      className={`p-4 hover:bg-gray-50 cursor-pointer transition-colors ${
+                        message.isUnread ? 'bg-blue-50' : ''
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`font-medium text-gray-900 truncate ${
+                              message.isUnread ? 'font-bold' : ''
+                            }`}>
+                              {extractSenderName(message.from)}
+                            </span>
+                            {message.isUnread && (
+                              <span className="w-2 h-2 bg-blue-600 rounded-full"></span>
+                            )}
+                          </div>
+                          <div className={`text-sm mb-1 truncate ${
+                            message.isUnread ? 'font-semibold text-gray-900' : 'text-gray-700'
+                          }`}>
+                            {message.subject}
+                          </div>
+                          <div className="text-sm text-gray-500 truncate">
+                            {message.snippet}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <Clock className="w-3 h-3" />
+                          {formatDate(message.date)}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
 
-
-        {!showCompose ? (
-          
-
-          <div className="text-center py-12">
-            <button
-              onClick={() => setShowCompose(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg transition-colors inline-flex items-center gap-2"
-            >
-              <Mail className="w-5 h-5" />
-              New Message
-            </button>
+                  {nextPageToken && (
+                    <div className="p-4 text-center">
+                      <button
+                        onClick={() => loadInbox(nextPageToken)}
+                        disabled={loadingMessages}
+                        className="text-blue-600 hover:text-blue-700 font-medium"
+                      >
+                        {loadingMessages ? 'Loading...' : 'Load More'}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
-          
-        ) : (
-          
+        )}
+
+        {/* Message Detail View */}
+        {currentView === 'message' && selectedMessage && (
+          <div className="bg-white rounded-lg shadow-lg">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <button
+                onClick={() => {
+                  setCurrentView('inbox');
+                  setSelectedMessage(null);
+                }}
+                className="flex items-center gap-2 text-gray-600 hover:text-gray-800"
+              >
+                <ArrowLeft className="w-5 h-5" />
+                Back to Inbox
+              </button>
+              <button
+                onClick={handleCompose}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+              >
+                Compose
+              </button>
+            </div>
+
+            <div className="p-6">
+              <h2 className="text-2xl font-semibold text-gray-900 mb-4">
+                {selectedMessage.subject}
+              </h2>
+
+              <div className="mb-6 space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium text-gray-700">From:</span>
+                  <span className="text-gray-600">{selectedMessage.from}</span>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium text-gray-700">To:</span>
+                  <span className="text-gray-600">{selectedMessage.to}</span>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium text-gray-700">Date:</span>
+                  <span className="text-gray-600">{new Date(selectedMessage.date).toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="border-t border-gray-200 pt-6">
+                <pre className="whitespace-pre-wrap text-gray-800 font-sans">
+                  {selectedMessage.body}
+                </pre>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Compose View */}
+        {currentView === 'compose' && (
           <div className="bg-white rounded-lg shadow-lg">
             <div className="flex items-center justify-between p-4 border-b border-gray-200">
               <h2 className="text-lg font-semibold text-gray-800">New Message</h2>
-              <button onClick={() => setShowCompose(false)} className="text-gray-400 hover:text-gray-600">
+              <button
+                onClick={() => {
+                  setShowCompose(false);
+                  setCurrentView('inbox');
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -511,36 +697,35 @@ const GmailComposeApp = () => {
                 />
 
                 {showCcBcc && (
-                <>
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      CC
-                    </label>
-                    <input
-                      type="text"
-                      value={ccField}
-                      onChange={(e) => setCcField(e.target.value)}
-                      placeholder="Enter CC recipients"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                    />
-                  </div>
+                  <>
+                    <div className="mt-4">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        CC
+                      </label>
+                      <input
+                        type="text"
+                        value={ccField}
+                        onChange={(e) => setCcField(e.target.value)}
+                        placeholder="Enter CC recipients"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                      />
+                    </div>
 
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      BCC
-                    </label>
-                    <input
-                      type="text"
-                      value={bccField}
-                      onChange={(e) => setBccField(e.target.value)}
-                      placeholder="Enter BCC recipients"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                    />
-                  </div>
-                </>
-              )}
+                    <div className="mt-4">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        BCC
+                      </label>
+                      <input
+                        type="text"
+                        value={bccField}
+                        onChange={(e) => setBccField(e.target.value)}
+                        placeholder="Enter BCC recipients"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                      />
+                    </div>
+                  </>
+                )}
 
-                
                 {suggestions.length > 0 && (
                   <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                     {suggestions.map((contact, index) => (
@@ -584,28 +769,32 @@ const GmailComposeApp = () => {
               </div>
 
               <div className="flex gap-3">
-                <button
-                  onClick={handleSend}
-                  disabled={loading}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-2 px-6 rounded-lg transition-colors inline-flex items-center gap-2"
-                >
-                  <Send className="w-4 h-4" />
-                  {loading ? 'Sending...' : 'Send'}
-                </button>
-                <button
-                  onClick={() => setShowCompose(false)}
-                  className="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-6 rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
+  <button
+    onClick={handleSend}
+    disabled={loading}
+    className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-2 px-6 rounded-lg transition-colors inline-flex items-center gap-2"
+  >
+    <Send className="w-4 h-4" />
+    {loading ? 'Sending...' : 'Send'}
+  </button>
 
-        )}
-      </main>
-    </div>
-  );
+  <button
+    onClick={() => {
+      setShowCompose(false);
+      setCurrentView('inbox');
+    }}
+    className="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-6 rounded-lg transition-colors"
+  >
+    Cancel
+  </button>
+</div>
+        </div>
+      </div>
+    )}
+  </main>
+</div>
+);
 };
-
 export default GmailComposeApp;
+
+                  

@@ -327,6 +327,158 @@ def transcribe_audio():
     finally:
         os.remove(audio_path)
 
+@app.route('/api/inbox/messages', methods=['GET'])
+def get_inbox_messages():
+    """Fetch recent emails from user's inbox"""
+    try:
+        # Get pagination parameters
+        page_token = request.args.get('pageToken')
+        max_results = int(request.args.get('maxResults', 20))
+        
+        service = get_gmail_service_from_session()
+        if not service:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        # Fetch messages list
+        results = service.users().messages().list(
+            userId='me',
+            maxResults=max_results,
+            pageToken=page_token,
+            labelIds=['INBOX']
+        ).execute()
+
+        messages = results.get('messages', [])
+        next_page_token = results.get('nextPageToken')
+
+        # Fetch full details for each message
+        detailed_messages = []
+        for msg in messages:
+            try:
+                message = service.users().messages().get(
+                    userId='me',
+                    id=msg['id'],
+                    format='full'
+                ).execute()
+
+                # Extract headers
+                headers = message['payload'].get('headers', [])
+                subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
+                from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
+                date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
+                
+                # Extract body
+                body = ''
+                if 'parts' in message['payload']:
+                    for part in message['payload']['parts']:
+                        if part['mimeType'] == 'text/plain':
+                            if 'data' in part['body']:
+                                body = base64.urlsafe_b64decode(
+                                    part['body']['data']
+                                ).decode('utf-8', errors='ignore')
+                                break
+                elif 'body' in message['payload'] and 'data' in message['payload']['body']:
+                    body = base64.urlsafe_b64decode(
+                        message['payload']['body']['data']
+                    ).decode('utf-8', errors='ignore')
+
+                # Check if unread
+                is_unread = 'UNREAD' in message.get('labelIds', [])
+
+                detailed_messages.append({
+                    'id': message['id'],
+                    'threadId': message['threadId'],
+                    'subject': subject,
+                    'from': from_email,
+                    'date': date,
+                    'snippet': message.get('snippet', ''),
+                    'body': body[:500],  # Preview only
+                    'isUnread': is_unread
+                })
+
+            except Exception as e:
+                print(f"Error fetching message {msg['id']}: {e}")
+                continue
+
+        return jsonify({
+            'success': True,
+            'messages': detailed_messages,
+            'nextPageToken': next_page_token
+        })
+
+    except Exception as e:
+        print(f"Inbox fetch error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/inbox/message/<message_id>', methods=['GET'])
+def get_message_detail(message_id):
+    """Fetch full message details"""
+    try:
+        service = get_gmail_service_from_session()
+        if not service:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        message = service.users().messages().get(
+            userId='me',
+            id=message_id,
+            format='full'
+        ).execute()
+
+        # Extract headers
+        headers = message['payload'].get('headers', [])
+        subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
+        from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
+        to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
+        date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
+        
+        # Extract full body
+        body = ''
+        if 'parts' in message['payload']:
+            for part in message['payload']['parts']:
+                if part['mimeType'] == 'text/plain':
+                    if 'data' in part['body']:
+                        body = base64.urlsafe_b64decode(
+                            part['body']['data']
+                        ).decode('utf-8', errors='ignore')
+                        break
+                elif part['mimeType'] == 'text/html':
+                    if 'data' in part['body']:
+                        body = base64.urlsafe_b64decode(
+                            part['body']['data']
+                        ).decode('utf-8', errors='ignore')
+        elif 'body' in message['payload'] and 'data' in message['payload']['body']:
+            body = base64.urlsafe_b64decode(
+                message['payload']['body']['data']
+            ).decode('utf-8', errors='ignore')
+
+        # Mark as read
+        service.users().messages().modify(
+            userId='me',
+            id=message_id,
+            body={'removeLabelIds': ['UNREAD']}
+        ).execute()
+
+        return jsonify({
+            'success': True,
+            'message': {
+                'id': message['id'],
+                'subject': subject,
+                'from': from_email,
+                'to': to_email,
+                'date': date,
+                'body': body
+            }
+        })
+
+    except Exception as e:
+        print(f"Message detail error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 if __name__ == "__main__":
