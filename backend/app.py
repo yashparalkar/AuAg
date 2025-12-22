@@ -454,12 +454,16 @@ def get_message_detail(message_id):
                 message['payload']['body']['data']
             ).decode('utf-8', errors='ignore')
 
-        # Mark as read
-        service.users().messages().modify(
-            userId='me',
-            id=message_id,
-            body={'removeLabelIds': ['UNREAD']}
-        ).execute()
+        # Try to mark as read (optional - won't fail if no permission)
+        try:
+            service.users().messages().modify(
+                userId='me',
+                id=message_id,
+                body={'removeLabelIds': ['UNREAD']}
+            ).execute()
+        except Exception as mark_error:
+            print(f"Could not mark as read (insufficient permissions): {mark_error}")
+            # Continue anyway - we can still show the message
 
         return jsonify({
             'success': True,
