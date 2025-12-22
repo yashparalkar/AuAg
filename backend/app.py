@@ -35,6 +35,7 @@ from google_auth_web import (
 #     return send_from_directory(FRONTEND_BUILD_DIR, "index.html")
 app = Flask(__name__)
 app.secret_key = os.environ["FLASK_SECRET_KEY"]
+# app.secret_key =  secrets.token_hex(16)
 
 
 app.config.update(
@@ -69,21 +70,7 @@ CORS(
     supports_credentials=True
 )
 
-
-gmail_manager = None
-gmail_managers = {}
-
 mediators = {}
-
-
-def get_gmail_manager():
-    global gmail_manager
-
-    if gmail_manager is None:
-        gmail_manager = GmailOAuthManager(token_file="token.json")
-        gmail_manager.authenticate()
-
-    return gmail_manager
 
 
 @app.route('/api/health', methods=['GET'])
@@ -117,6 +104,7 @@ def google_callback():
     session["google_creds"] = credentials_to_dict(creds)
 
     return redirect("https://auag-assistant.vercel.app")
+    # return redirect("http://localhost:3000")
 
 
 
@@ -168,43 +156,51 @@ def search_contacts():
 
 @app.route('/api/email/send', methods=['POST'])
 def send_email():
-    """Send an email"""
     try:
         data = request.json
         to = data.get('to')
         subject = data.get('subject')
         body = data.get('body', '')
-        
+
         if not to or not subject:
             return jsonify({
                 'success': False,
                 'error': 'Missing required fields: to, subject'
             }), 400
-        gmail = get_gmail_manager()
 
-        if not gmail.creds or not gmail.creds.valid:
+        # ✅ USE SESSION-BASED SERVICE
+        service = get_gmail_service_from_session()
+
+        if not service:
             return jsonify({
                 'success': False,
                 'error': 'Not authenticated'
             }), 401
-        
-        message_id = gmail.send_email(to, subject, body)
-        
-        if message_id:
-            return jsonify({
-                'success': True,
-                'message_id': message_id
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Failed to send email'
-            }), 500
+
+        message = {
+            "raw": generate_email_from_description(
+                to=to,
+                subject=subject,
+                body=body
+            )
+        }
+
+        result = service.users().messages().send(
+            userId="me",
+            body=message
+        ).execute()
+
+        return jsonify({
+            'success': True,
+            'message_id': result.get("id")
+        })
+
     except Exception as e:
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
+
     
 
 

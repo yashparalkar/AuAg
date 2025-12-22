@@ -22,7 +22,6 @@ const GmailComposeApp = () => {
 
   const [emailGenerated, setEmailGenerated] = useState(false);
 
-  // const [mediatorInput, setMediatorInput] = useState('');
   const [mediatorState, setMediatorState] = useState(null);
 
   const [prevMediatorState, setPrevMediatorState] = useState(null);
@@ -75,33 +74,6 @@ const GmailComposeApp = () => {
     }
   }, [showCompose]);
 
-  // const handleAudioToggle = async () => {
-  //   if (!isRecording) {
-  //     await fetch(`${API_BASE}/audio/start`, {
-  //       method: 'POST',
-  //       credentials: 'include'
-  //     });
-  //     setIsRecording(true);
-  //   } else {
-  //     const response = await fetch(`${API_BASE}/audio/stop`, {
-  //       method: 'POST',
-  //       credentials: 'include'
-  //     });
-
-  //     const data = await response.json();
-  //     if (data.success) {
-  //       // Send transcription to mediator
-  //       await fetch(`${API_BASE}/mediator/advance`, {
-  //         method: 'POST',
-  //         headers: { 'Content-Type': 'application/json' },
-  //         credentials: 'include',
-  //         body: JSON.stringify({ input: data.text })
-  //       });
-  //     }
-
-  //     setIsRecording(false);
-  //   }
-  // };
 
 
 
@@ -199,7 +171,6 @@ const GmailComposeApp = () => {
   useEffect(() => {
     if (!mediatorState || !prevMediatorState) return;
 
-    // 1. Recipient name changed
     if (
       mediatorState.recipient_name &&
       mediatorState.recipient_name !== prevMediatorState.recipient_name &&
@@ -208,17 +179,13 @@ const GmailComposeApp = () => {
       setToField(mediatorState.recipient_name);
     }
 
-    // 2. Recipient option index changed
     if (
       mediatorState.recipient_options !== null &&
       mediatorState.recipient_options !== prevMediatorState.recipient_options
     ) {
-      // Do nothing here directly.
-      // Existing suggestion-selection effect will pick this up
-      // once suggestions are populated.
+    
     }
 
-    // 3. Description changed → allow regeneration
     if (
       mediatorState.description &&
       mediatorState.description !== prevMediatorState.description
@@ -288,15 +255,6 @@ const GmailComposeApp = () => {
     return () => clearTimeout(timeoutId);
   }, [toField]);
 
-  // useEffect(() => {
-  //   if (suggestions.length === 0) return;
-
-  //   // Auto-select the first suggestion (hardcoded behavior)
-  //   const firstContact = suggestions[0];
-  //   setToField(firstContact.email);
-  //   setSuggestions([]);
-  //   setSelectedIndex(-1);
-  // }, [suggestions]);
 
   useEffect(() => {
     if (!composeContext) return;
