@@ -9,6 +9,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import os
 import tempfile
 from transcriber import transcribe
+import base64
+from email.mime.text import MIMEText
 
 from google_auth_web import (
     build_flow,
@@ -168,7 +170,6 @@ def send_email():
                 'error': 'Missing required fields: to, subject'
             }), 400
 
-        # ✅ USE SESSION-BASED SERVICE
         service = get_gmail_service_from_session()
 
         if not service:
@@ -177,22 +178,22 @@ def send_email():
                 'error': 'Not authenticated'
             }), 401
 
-        message = {
-            "raw": generate_email_from_description(
-                to=to,
-                subject=subject,
-                body=body
-            )
-        }
+        message = MIMEText(body)
+        message['to'] = to
+        message['subject'] = subject
+
+        raw_message = base64.urlsafe_b64encode(
+            message.as_bytes()
+        ).decode('utf-8')
 
         result = service.users().messages().send(
-            userId="me",
-            body=message
+            userId='me',
+            body={'raw': raw_message}
         ).execute()
 
         return jsonify({
             'success': True,
-            'message_id': result.get("id")
+            'message_id': result.get('id')
         })
 
     except Exception as e:
@@ -201,7 +202,45 @@ def send_email():
             'error': str(e)
         }), 500
 
-    
+
+# @app.route('/api/email/send', methods=['POST'])
+# def send_email():
+#     """Send an email"""
+#     try:
+#         data = request.json
+#         to = data.get('to')
+#         subject = data.get('subject')
+#         body = data.get('body', '')
+
+#         if not to or not subject:
+#             return jsonify({
+#                 'success': False,
+#                 'error': 'Missing required fields: to, subject'
+#             }), 400
+
+#         gmail = get_gmail_manager()
+#         if not gmail.creds or not gmail.creds.valid:
+#             return jsonify({
+#                 'success': False,
+#                 'error': 'Not authenticated'
+#             }), 401
+
+#         message_id = gmail.send_email(to, subject, body)
+#         if message_id:
+#             return jsonify({
+#                 'success': True,
+#                 'message_id': message_id
+#             })
+#         else:
+#             return jsonify({
+#                 'success': False,
+#                 'error': 'Failed to send email'
+#             }), 500
+#     except Exception as e:
+#         return jsonify({
+#             'success': False,
+#             'error': str(e)
+#         }), 500
 
 
 def get_mediator():
