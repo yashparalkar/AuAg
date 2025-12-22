@@ -554,10 +554,10 @@ const GmailComposeApp = () => {
               ) : (
                 <>
                   {messages.map((message) => (
-                    <div
+                    <button
                       key={message.id}
                       onClick={() => loadMessageDetail(message.id)}
-                      className={`p-4 hover:bg-gray-50 cursor-pointer transition-colors ${
+                      className={`w-full text-left p-4 hover:bg-gray-50 cursor-pointer transition-colors ${
                         message.isUnread ? 'bg-blue-50' : ''
                       }`}
                     >
@@ -587,7 +587,7 @@ const GmailComposeApp = () => {
                           {formatDate(message.date)}
                         </div>
                       </div>
-                    </div>
+                    </button>
                   ))}
 
                   {nextPageToken && (
