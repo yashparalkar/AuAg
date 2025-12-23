@@ -650,9 +650,20 @@ const GmailComposeApp = () => {
               </div>
 
               <div className="border-t border-gray-200 pt-6">
-                <pre className="whitespace-pre-wrap text-gray-800 font-sans">
-                  {selectedMessage.body}
-                </pre>
+                {selectedMessage.isHtml ? (
+                  <div 
+                    className="prose max-w-none text-gray-800"
+                    style={{
+                      wordWrap: 'break-word',
+                      overflowWrap: 'break-word'
+                    }}
+                    dangerouslySetInnerHTML={{ __html: selectedMessage.body }}
+                  />
+                ) : (
+                  <pre className="whitespace-pre-wrap text-gray-800 font-sans">
+                    {selectedMessage.body}
+                  </pre>
+                )}
               </div>
             </div>
           </div>
@@ -769,9 +780,9 @@ const GmailComposeApp = () => {
               </div>
 
               <div className="flex gap-3">
-  <button
-    onClick={handleSend}
-    disabled={loading}
+                <button
+                  onClick={handleSend}
+                  disabled={loading}
     className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-2 px-6 rounded-lg transition-colors inline-flex items-center gap-2"
   >
     <Send className="w-4 h-4" />

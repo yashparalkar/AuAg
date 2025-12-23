@@ -436,34 +436,50 @@ def get_message_detail(message_id):
         
         # Extract full body
         body = ''
+        body_html = ''
+        body_plain = ''
+        
         if 'parts' in message['payload']:
             for part in message['payload']['parts']:
-                if part['mimeType'] == 'text/plain':
-                    if 'data' in part['body']:
-                        body = base64.urlsafe_b64decode(
-                            part['body']['data']
-                        ).decode('utf-8', errors='ignore')
-                        break
-                elif part['mimeType'] == 'text/html':
-                    if 'data' in part['body']:
-                        body = base64.urlsafe_b64decode(
-                            part['body']['data']
-                        ).decode('utf-8', errors='ignore')
+                if part['mimeType'] == 'text/plain' and 'data' in part['body']:
+                    body_plain = base64.urlsafe_b64decode(
+                        part['body']['data']
+                    ).decode('utf-8', errors='ignore')
+                elif part['mimeType'] == 'text/html' and 'data' in part['body']:
+                    body_html = base64.urlsafe_b64decode(
+                        part['body']['data']
+                    ).decode('utf-8', errors='ignore')
+                # Handle multipart/alternative nested structure
+                elif part['mimeType'].startswith('multipart/') and 'parts' in part:
+                    for subpart in part['parts']:
+                        if subpart['mimeType'] == 'text/plain' and 'data' in subpart['body']:
+                            body_plain = base64.urlsafe_b64decode(
+                                subpart['body']['data']
+                            ).decode('utf-8', errors='ignore')
+                        elif subpart['mimeType'] == 'text/html' and 'data' in subpart['body']:
+                            body_html = base64.urlsafe_b64decode(
+                                subpart['body']['data']
+                            ).decode('utf-8', errors='ignore')
         elif 'body' in message['payload'] and 'data' in message['payload']['body']:
-            body = base64.urlsafe_b64decode(
+            content = base64.urlsafe_b64decode(
                 message['payload']['body']['data']
             ).decode('utf-8', errors='ignore')
+            
+            if message['payload']['mimeType'] == 'text/html':
+                body_html = content
+            else:
+                body_plain = content
+        
+        # Prefer plain text, fallback to HTML
+        body = body_plain if body_plain else body_html
+        is_html = not body_plain and body_html
 
-        # Try to mark as read (optional - won't fail if no permission)
-        try:
-            service.users().messages().modify(
-                userId='me',
-                id=message_id,
-                body={'removeLabelIds': ['UNREAD']}
-            ).execute()
-        except Exception as mark_error:
-            print(f"Could not mark as read (insufficient permissions): {mark_error}")
-            # Continue anyway - we can still show the message
+        # Mark as read
+        service.users().messages().modify(
+            userId='me',
+            id=message_id,
+            body={'removeLabelIds': ['UNREAD']}
+        ).execute()
 
         return jsonify({
             'success': True,
@@ -473,7 +489,8 @@ def get_message_detail(message_id):
                 'from': from_email,
                 'to': to_email,
                 'date': date,
-                'body': body
+                'body': body,
+                'isHtml': is_html
             }
         })
 
