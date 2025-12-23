@@ -12,7 +12,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/contacts.other.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.full",
 ]
 
 CLIENT_SECRETS_FILE = "credentials.json"
