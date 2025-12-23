@@ -470,9 +470,9 @@ def get_message_detail(message_id):
             else:
                 body_plain = content
         
-        # Prefer plain text, fallback to HTML
-        body = body_plain if body_plain else body_html
-        is_html = not body_plain and body_html
+        # New code: Prefer HTML, fallback to Plain Text
+        body = body_html if body_html else body_plain
+        is_html = bool(body_html)
 
         # Mark as read
         service.users().messages().modify(
