@@ -208,26 +208,30 @@ const GmailComposeApp = () => {
   };
 
   const loadMessageDetail = async (messageId) => {
-    try {
-      const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
-        credentials: 'include'
+  try {
+    const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
+      credentials: 'include'
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      // Store the complete message including threadId
+      setSelectedMessage({
+        ...data.message,
+        threadId: data.message.threadId || data.message.id // Ensure threadId is present
       });
-
-      const data = await response.json();
-
-      if (data.success) {
-        setSelectedMessage(data.message);
-        setCurrentView('message');
-        
-        // Update unread status in list
-        setMessages(prev => prev.map(msg => 
-          msg.id === messageId ? { ...msg, isUnread: false } : msg
-        ));
-      }
-    } catch (error) {
-      console.error('Failed to load message:', error);
+      setCurrentView('message');
+      
+      // Update unread status in list
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, isUnread: false } : msg
+      ));
     }
-  };
+  } catch (error) {
+    console.error('Failed to load message:', error);
+  }
+};
 
   const formatDate = (dateString) => {
     const date = new Date(dateString);

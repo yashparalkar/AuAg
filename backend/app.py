@@ -167,7 +167,7 @@ def send_email():
         subject = data.get('subject')
         body_text = data.get('body')
         thread_id = data.get('threadId')
-        reply_to_id = data.get('messageId')  # <--- NEW: The ID of the specific message we are replying to
+        reply_to_id = data.get('messageId')  # The ID of the message we're replying to
 
         service = get_gmail_service_from_session()
         
@@ -176,10 +176,10 @@ def send_email():
         message['from'] = 'me'
         message['subject'] = subject
         
-        # --- THREADING LOGIC START ---
+        # --- THREADING LOGIC ---
         if reply_to_id:
             try:
-                # 1. Fetch the original message headers to get its "Message-ID" and "References"
+                # Fetch the original message headers
                 original_msg = service.users().messages().get(
                     userId='me', 
                     id=reply_to_id, 
@@ -189,36 +189,45 @@ def send_email():
 
                 headers = original_msg.get('payload', {}).get('headers', [])
                 
-                # Get the RFC Message-ID (e.g., <CADs=... @mail.gmail.com>)
+                # Get the RFC Message-ID
                 rfc_message_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), None)
                 
-                # Get existing References (history of the thread)
+                # Get existing References
                 existing_references = next((h['value'] for h in headers if h['name'] == 'References'), '')
 
                 if rfc_message_id:
-                    # Required for threading: Point back to the original message
+                    # Set In-Reply-To header
                     message['In-Reply-To'] = rfc_message_id
                     
-                    # Append the original message ID to the reference chain
-                    new_references = existing_references + ' ' + rfc_message_id if existing_references else rfc_message_id
+                    # Build References chain
+                    if existing_references:
+                        new_references = existing_references.strip() + ' ' + rfc_message_id
+                    else:
+                        new_references = rfc_message_id
                     message['References'] = new_references
+                    
+                    print(f"Threading headers set - In-Reply-To: {rfc_message_id}")
 
             except Exception as e:
-                print(f"Threading error (sending anyway): {e}")
-        # --- THREADING LOGIC END ---
+                print(f"Threading error: {e}")
         
+        # Encode the message
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
         
         body = {'raw': raw_message}
         
+        # IMPORTANT: Include threadId in the request
         if thread_id:
             body['threadId'] = thread_id
+            print(f"Sending with threadId: {thread_id}")
 
+        # Send the message
         sent_message = service.users().messages().send(
             userId='me',
             body=body
         ).execute()
 
+        print(f"Message sent successfully: {sent_message['id']}")
         return jsonify({'success': True, 'id': sent_message['id']})
 
     except Exception as e:
@@ -493,7 +502,7 @@ def get_message_detail(message_id):
             else:
                 body_plain = content
         
-        # New code: Prefer HTML, fallback to Plain Text
+        # Prefer HTML, fallback to Plain Text
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
@@ -508,6 +517,7 @@ def get_message_detail(message_id):
             'success': True,
             'message': {
                 'id': message['id'],
+                'threadId': message['threadId'],  # ADDED: Include threadId
                 'subject': subject,
                 'from': from_email,
                 'to': to_email,
