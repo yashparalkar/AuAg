@@ -166,7 +166,8 @@ def send_email():
         to_email = data.get('to')
         subject = data.get('subject')
         body_text = data.get('body')
-        thread_id = data.get('threadId')  # <--- NEW: Get threadId
+        thread_id = data.get('threadId')
+        reply_to_id = data.get('messageId')  # <--- NEW: The ID of the specific message we are replying to
 
         service = get_gmail_service_from_session()
         
@@ -175,14 +176,41 @@ def send_email():
         message['from'] = 'me'
         message['subject'] = subject
         
-        # If replying to a thread, Gmail needs the References/In-Reply-To headers usually,
-        # but often just passing threadId in the body is enough for simple grouping.
+        # --- THREADING LOGIC START ---
+        if reply_to_id:
+            try:
+                # 1. Fetch the original message headers to get its "Message-ID" and "References"
+                original_msg = service.users().messages().get(
+                    userId='me', 
+                    id=reply_to_id, 
+                    format='metadata',
+                    metadataHeaders=['Message-ID', 'References']
+                ).execute()
+
+                headers = original_msg.get('payload', {}).get('headers', [])
+                
+                # Get the RFC Message-ID (e.g., <CADs=... @mail.gmail.com>)
+                rfc_message_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), None)
+                
+                # Get existing References (history of the thread)
+                existing_references = next((h['value'] for h in headers if h['name'] == 'References'), '')
+
+                if rfc_message_id:
+                    # Required for threading: Point back to the original message
+                    message['In-Reply-To'] = rfc_message_id
+                    
+                    # Append the original message ID to the reference chain
+                    new_references = existing_references + ' ' + rfc_message_id if existing_references else rfc_message_id
+                    message['References'] = new_references
+
+            except Exception as e:
+                print(f"Threading error (sending anyway): {e}")
+        # --- THREADING LOGIC END ---
         
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
         
         body = {'raw': raw_message}
         
-        # <--- NEW: Attach threadId if it exists
         if thread_id:
             body['threadId'] = thread_id
 

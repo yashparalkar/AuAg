@@ -131,7 +131,6 @@ const GmailComposeApp = () => {
     setCurrentView('compose');
   };
 
-  // Function to Send the Inline Reply
   const sendInlineReply = async () => {
     if (!replyBody.trim()) return;
     
@@ -139,7 +138,6 @@ const GmailComposeApp = () => {
     setStatus('Sending reply...');
 
     try {
-      // Extract email
       const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
       const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
 
@@ -151,7 +149,8 @@ const GmailComposeApp = () => {
           to: replyToEmail, 
           subject: selectedMessage.subject, 
           body: replyBody,
-          threadId: selectedMessage.threadId // <--- Sending Thread ID
+          threadId: selectedMessage.threadId,
+          messageId: selectedMessage.id  // <--- ADD THIS LINE (Pass the ID of the mail we are reading)
         })
       });
       
@@ -161,7 +160,6 @@ const GmailComposeApp = () => {
         setStatus('Reply sent!');
         setReplyBody('');
         setInlineReplyOpen(false);
-        // Optional: Refresh the message or reload inbox
       } else {
         setStatus('Failed: ' + data.error);
       }
