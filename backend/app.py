@@ -11,12 +11,29 @@ import tempfile
 from transcriber import transcribe
 import base64
 from email.mime.text import MIMEText
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 from google_auth_web import (
     build_flow,
     credentials_to_dict,
     get_gmail_service_from_session
 )
+
+
+if not firebase_admin._apps:
+    if os.environ.get('FIREBASE_CREDENTIALS'):
+        cred_dict = json.loads(os.environ.get('FIREBASE_CREDENTIALS'))
+        cred = credentials.Certificate(cred_dict)
+    else:
+        cred = credentials.Certificate('firebase_credentials.json')
+        
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 
 # BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -81,20 +98,58 @@ def health_check():
     return jsonify({'status': 'ok'})
 
 
-@app.route("/api/auth/status")
+@app.route('/api/auth/status', methods=['GET'])
 def auth_status():
-    authenticated = "google_creds" in session
-    email = None
+    # Check if we have credentials stored in the session
+    # Note: google_auth_web.py uses "google_creds", so we use that key here
+    if 'google_creds' not in session:
+        return jsonify({'authenticated': False})
 
-    if authenticated:
-        service = get_gmail_service_from_session()
-        profile = service.users().getProfile(userId="me").execute()
-        email = profile.get("emailAddress")
+    try:
+        # 1. Rebuild credentials object from session data
+        creds_data = session['google_creds']
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        # 2. Call Google's "User Info" API to get Name & Picture
+        # We use a specific service called 'oauth2' version 'v2'
+        user_info_service = build('oauth2', 'v2', credentials=creds)
+        user_info = user_info_service.userinfo().get().execute()
+        
+        email = user_info.get('email')
+        name = user_info.get('name', 'Unknown')
+        picture = user_info.get('picture', '')
 
-    return jsonify({
-        "authenticated": authenticated,
-        "email": email
-    })
+        # 3. Save to Firebase (if DB is connected)
+        if db:
+            # Create/Update a document in the 'users' collection
+            # The document ID is the email address
+            user_ref = db.collection('users').document(email)
+            user_ref.set({
+                'email': email,
+                'name': name,
+                'picture': picture,
+                'last_seen': firestore.SERVER_TIMESTAMP
+            }, merge=True) # merge=True updates fields without deleting old ones
+
+        return jsonify({
+            'authenticated': True, 
+            'email': email,
+            'name': name,
+            'picture': picture
+        })
+
+    except Exception as e:
+        print(f"Auth Check Error: {e}")
+        # If the token is invalid or expired, clear session
+        session.pop('google_creds', None)
+        return jsonify({'authenticated': False})
 
 
 @app.route("/auth/google/callback", methods=["GET"])
@@ -517,7 +572,7 @@ def get_message_detail(message_id):
             'success': True,
             'message': {
                 'id': message['id'],
-                'threadId': message['threadId'],  # ADDED: Include threadId
+                'threadId': message['threadId'],
                 'subject': subject,
                 'from': from_email,
                 'to': to_email,

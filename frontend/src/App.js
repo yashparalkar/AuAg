@@ -780,25 +780,162 @@ const GmailComposeApp = () => {
         )}
 
         {/* --- COMPOSE VIEW (Full Screen) --- */}
+        {/* --- COMPOSE VIEW (Full Screen on Mobile, Modal on Desktop) --- */}
         {currentView === 'compose' && (
           <div className="fixed inset-0 z-50 bg-white sm:relative sm:z-0 sm:bg-transparent sm:h-auto overflow-y-auto">
-             {/* ... Keep your existing Compose UI code here ... */}
-             {/* Just for brevity, I am not repeating the huge block, but keep the previous Compose code exactly as is */}
-             <div className="bg-white sm:rounded-lg sm:shadow-lg min-h-screen sm:min-h-0">
-               {/* ... Compose Header ... */}
-               <div className="flex items-center justify-between p-4 border-b border-gray-200 sticky top-0 bg-white z-10">
-                 <h2 className="text-lg font-semibold text-gray-800">New Message</h2>
-                 <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); }} className="p-2 -mr-2 text-gray-500 rounded-full"><X className="w-6 h-6" /></button>
-               </div>
-               <div className="p-4 sm:p-6 pb-24">
-                  {/* ... Inputs (To, Subject, Body) ... */}
-                  {/* ... Voice FAB logic ... */}
-                  <div className="mb-4"><label className="text-sm">To</label><input className="w-full border p-2 rounded" value={toField} onChange={(e) => setToField(e.target.value)} /></div>
-                  <div className="mb-4"><label className="text-sm">Subject</label><input className="w-full border p-2 rounded" value={subject} onChange={(e) => setSubject(e.target.value)} /></div>
-                  <div className="mb-4"><textarea className="w-full border p-2 rounded h-40" value={body} onChange={(e) => setBody(e.target.value)} /></div>
-                  <div className="flex gap-3"><button onClick={handleSend} className="bg-blue-600 text-white p-2 rounded">Send</button></div>
-               </div>
-             </div>
+            <div className="bg-white sm:rounded-lg sm:shadow-lg min-h-screen sm:min-h-0">
+              
+              {/* Compose Header */}
+              <div className="flex items-center justify-between p-4 border-b border-gray-200 sticky top-0 bg-white z-10">
+                <h2 className="text-lg font-semibold text-gray-800">New Message</h2>
+                <button
+                  onClick={() => {
+                    setShowCompose(false);
+                    setCurrentView('inbox');
+                  }}
+                  className="p-2 -mr-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-full"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="p-4 sm:p-6 pb-24">
+                
+                {/* Desktop Voice Panel (Hidden on Mobile, shown on Desktop) */}
+                <div className="hidden sm:block mb-6 bg-indigo-50 border border-indigo-100 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-indigo-900">Voice Assistant</h3>
+                    {isRecording && <span className="text-xs text-red-600 font-bold animate-pulse">● Recording...</span>}
+                  </div>
+                  <button
+                    onClick={handleAudioToggle}
+                    className={`w-full py-3 rounded-lg font-medium text-white transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2 ${
+                      isRecording
+                        ? 'bg-red-600 hover:bg-red-700'
+                        : 'bg-indigo-600 hover:bg-indigo-700'
+                    }`}
+                  >
+                    {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                    {isRecording ? 'Stop Recording' : 'Tap to Speak'}
+                  </button>
+                </div>
+
+                {/* To Field with Search Suggestions (RESTORED) */}
+                <div className="mb-4 relative">
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-sm font-medium text-gray-700">To</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowCcBcc(prev => !prev)}
+                      className="text-xs text-blue-600 hover:underline px-2 py-1"
+                    >
+                      {showCcBcc ? 'Hide CC/BCC' : 'Add CC/BCC'}
+                    </button>
+                  </div>
+                  
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={toField}
+                      onChange={(e) => setToField(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Recipient email or name"
+                      className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                      autoComplete="off"
+                    />
+
+                    {/* Suggestions Dropdown (RESTORED) */}
+                    {suggestions.length > 0 && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+                        {suggestions.map((contact, index) => (
+                          <div
+                            key={contact.email}
+                            onClick={() => selectSuggestion(contact)}
+                            className={`px-4 py-3 cursor-pointer transition-colors border-b last:border-0 ${
+                              index === selectedIndex
+                                ? 'bg-blue-50 border-l-4 border-blue-600'
+                                : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="font-medium text-gray-800">{contact.name}</div>
+                            <div className="text-sm text-gray-500">{contact.email}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* CC & BCC Fields */}
+                {showCcBcc && (
+                  <div className="mb-4 space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">CC</label>
+                      <input
+                        type="text"
+                        value={ccField}
+                        onChange={(e) => setCcField(e.target.value)}
+                        placeholder="Cc recipients"
+                        className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">BCC</label>
+                      <input
+                        type="text"
+                        value={bccField}
+                        onChange={(e) => setBccField(e.target.value)}
+                        placeholder="Bcc recipients"
+                        className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                  <input
+                    type="text"
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                    placeholder="Subject"
+                    className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                </div>
+
+                <div className="mb-4 flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Message</label>
+                  <textarea
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    placeholder="Compose email..."
+                    className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none resize-y min-h-[200px]"
+                  />
+                </div>
+
+                {/* Footer Actions */}
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={handleSend}
+                    disabled={loading}
+                    className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-3 px-6 rounded-lg transition-colors inline-flex items-center justify-center gap-2"
+                  >
+                    <Send className="w-4 h-4" />
+                    {loading ? 'Sending...' : 'Send'}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setShowCompose(false);
+                      setCurrentView('inbox');
+                    }}
+                    className="hidden sm:block bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </main>
