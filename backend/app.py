@@ -391,12 +391,39 @@ def generate_email():
 def advance_mediator():
     mediator = get_mediator()
     user_input = request.json.get('input')
-
+    
     if not user_input:
         return jsonify({'success': False, 'error': 'Missing input'}), 400
-
-    state = mediator.advance(user_input)
-
+    
+    # Get user name from Firebase
+    name = "User"  # Default fallback
+    try:
+        if 'google_creds' in session:
+            creds_data = session['google_creds']
+            creds = Credentials(
+                token=creds_data['token'],
+                refresh_token=creds_data.get('refresh_token'),
+                token_uri=creds_data['token_uri'],
+                client_id=creds_data['client_id'],
+                client_secret=creds_data['client_secret'],
+                scopes=creds_data['scopes']
+            )
+            
+            # Get email from Google
+            user_info_service = build('oauth2', 'v2', credentials=creds)
+            user_info = user_info_service.userinfo().get().execute()
+            email = user_info.get('email')
+            
+            # Fetch name from Firebase
+            if email and db:
+                user_doc = db.collection('users').document(email).get()
+                if user_doc.exists:
+                    name = user_doc.to_dict().get('name', 'User')
+    except Exception as e:
+        print(f"Error fetching user name: {e}")
+    
+    state = mediator.advance(user_input + f" sender_name: {name}")
+    
     return jsonify({
         'success': True,
         'state': state
