@@ -98,15 +98,52 @@ def health_check():
     return jsonify({'status': 'ok'})
 
 
+@app.route("/auth/google/callback", methods=["GET"])
+def google_callback():
+    try:
+        flow = build_flow()
+        flow.fetch_token(authorization_response=request.url)
+
+        creds = flow.credentials
+        session["google_creds"] = credentials_to_dict(creds)
+        
+        # Fetch and store user info immediately after authentication
+        try:
+            user_info_service = build('oauth2', 'v2', credentials=creds)
+            user_info = user_info_service.userinfo().get().execute()
+            
+            email = user_info.get('email')
+            name = user_info.get('name', 'Unknown')
+            picture = user_info.get('picture', '')
+
+            # Save to Firebase
+            if db:
+                user_ref = db.collection('users').document(email)
+                user_ref.set({
+                    'email': email,
+                    'name': name,
+                    'picture': picture,
+                    'last_seen': firestore.SERVER_TIMESTAMP
+                }, merge=True)
+                
+        except Exception as e:
+            print(f"Error fetching/storing user info: {e}")
+            # Continue anyway - authentication succeeded even if user info failed
+
+        return redirect("https://auag-assistant.vercel.app")
+        # return redirect("http://localhost:3000")
+        
+    except Exception as e:
+        print(f"OAuth Callback Error: {e}")
+        return jsonify({'error': 'Authentication failed', 'details': str(e)}), 500
+
+
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
-    # Check if we have credentials stored in the session
-    # Note: google_auth_web.py uses "google_creds", so we use that key here
     if 'google_creds' not in session:
         return jsonify({'authenticated': False})
 
     try:
-        # 1. Rebuild credentials object from session data
         creds_data = session['google_creds']
         creds = Credentials(
             token=creds_data['token'],
@@ -117,26 +154,13 @@ def auth_status():
             scopes=creds_data['scopes']
         )
         
-        # 2. Call Google's "User Info" API to get Name & Picture
-        # We use a specific service called 'oauth2' version 'v2'
+        # Fetch user info from Google
         user_info_service = build('oauth2', 'v2', credentials=creds)
         user_info = user_info_service.userinfo().get().execute()
         
         email = user_info.get('email')
         name = user_info.get('name', 'Unknown')
         picture = user_info.get('picture', '')
-
-        # 3. Save to Firebase (if DB is connected)
-        if db:
-            # Create/Update a document in the 'users' collection
-            # The document ID is the email address
-            user_ref = db.collection('users').document(email)
-            user_ref.set({
-                'email': email,
-                'name': name,
-                'picture': picture,
-                'last_seen': firestore.SERVER_TIMESTAMP
-            }, merge=True) # merge=True updates fields without deleting old ones
 
         return jsonify({
             'authenticated': True, 
@@ -146,22 +170,9 @@ def auth_status():
         })
 
     except Exception as e:
-        print(f"Auth Check Error: {e}")
-        # If the token is invalid or expired, clear session
+        print(f"Auth Status Check Error: {e}")
         session.pop('google_creds', None)
-        return jsonify({'authenticated': False})
-
-
-@app.route("/auth/google/callback", methods=["GET"])
-def google_callback():
-    flow = build_flow()
-    flow.fetch_token(authorization_response=request.url)
-
-    creds = flow.credentials
-    session["google_creds"] = credentials_to_dict(creds)
-
-    return redirect("https://auag-assistant.vercel.app")
-    # return redirect("http://localhost:3000")
+        return jsonify({'authenticated': False, 'error': str(e)})
 
 
 
