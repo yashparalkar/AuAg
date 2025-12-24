@@ -159,48 +159,43 @@ def search_contacts():
 @app.route('/api/email/send', methods=['POST'])
 def send_email():
     try:
-        data = request.json
-        to = data.get('to')
-        subject = data.get('subject')
-        body = data.get('body', '')
+        if not get_gmail_service_from_session():
+            return jsonify({'success': False, 'error': 'Auth required'}), 401
 
-        if not to or not subject:
-            return jsonify({
-                'success': False,
-                'error': 'Missing required fields: to, subject'
-            }), 400
+        data = request.json
+        to_email = data.get('to')
+        subject = data.get('subject')
+        body_text = data.get('body')
+        thread_id = data.get('threadId')  # <--- NEW: Get threadId
 
         service = get_gmail_service_from_session()
-
-        if not service:
-            return jsonify({
-                'success': False,
-                'error': 'Not authenticated'
-            }), 401
-
-        message = MIMEText(body)
-        message['to'] = to
+        
+        message = MIMEText(body_text)
+        message['to'] = to_email
+        message['from'] = 'me'
         message['subject'] = subject
+        
+        # If replying to a thread, Gmail needs the References/In-Reply-To headers usually,
+        # but often just passing threadId in the body is enough for simple grouping.
+        
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+        
+        body = {'raw': raw_message}
+        
+        # <--- NEW: Attach threadId if it exists
+        if thread_id:
+            body['threadId'] = thread_id
 
-        raw_message = base64.urlsafe_b64encode(
-            message.as_bytes()
-        ).decode('utf-8')
-
-        result = service.users().messages().send(
+        sent_message = service.users().messages().send(
             userId='me',
-            body={'raw': raw_message}
+            body=body
         ).execute()
 
-        return jsonify({
-            'success': True,
-            'message_id': result.get('id')
-        })
+        return jsonify({'success': True, 'id': sent_message['id']})
 
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        print(f"Send error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # @app.route('/api/email/send', methods=['POST'])
