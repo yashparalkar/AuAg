@@ -102,12 +102,16 @@ def health_check():
 def google_callback():
     try:
         flow = build_flow()
+        
+        # Disable strict scope checking for openid
+        os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
+        
         flow.fetch_token(authorization_response=request.url)
 
         creds = flow.credentials
         session["google_creds"] = credentials_to_dict(creds)
         
-        # Fetch and store user info immediately after authentication
+        # Fetch and store user info
         try:
             user_info_service = build('oauth2', 'v2', credentials=creds)
             user_info = user_info_service.userinfo().get().execute()
@@ -123,12 +127,19 @@ def google_callback():
                     'email': email,
                     'name': name,
                     'picture': picture,
-                    'last_seen': firestore.SERVER_TIMESTAMP
+                    'last_seen': firestore.SERVER_TIMESTAMP,
+                    'relations': {}  # Initialize empty relations on first login
                 }, merge=True)
+            
+            # Cache in session for quick access
+            session['user_info'] = {
+                'email': email,
+                'name': name,
+                'picture': picture
+            }
                 
         except Exception as e:
             print(f"Error fetching/storing user info: {e}")
-            # Continue anyway - authentication succeeded even if user info failed
 
         return redirect("https://auag-assistant.vercel.app")
         # return redirect("http://localhost:3000")
@@ -209,18 +220,162 @@ def search_contacts():
 
         creds = service._http.credentials
 
-        contacts = GmailOAuthManager.search_contacts_with_creds(creds, query)
+        # 1. Search Google Contacts
+        google_contacts = GmailOAuthManager.search_contacts_with_creds(creds, query)
+        
+        # 2. Search Saved Relations
+        user_email = get_current_user_email()
+        relation_contacts = []
+        
+        if user_email and db:
+            try:
+                user_ref = db.collection('users').document(user_email)
+                user_doc = user_ref.get()
+                
+                if user_doc.exists:
+                    user_data = user_doc.to_dict()
+                    relations = user_data.get('relations', {})
+                    
+                    query_lower = query.lower()
+                    
+                    # Search through relations
+                    for relation, emails in relations.items():
+                        # Match by relation name (e.g., "manager", "professor")
+                        if query_lower in relation.lower():
+                            for email in emails:
+                                relation_contacts.append({
+                                    'name': f"{relation.capitalize()} - {email.split('@')[0]}",
+                                    'email': email,
+                                    'source': 'saved_relation'
+                                })
+                        # Match by email
+                        else:
+                            for email in emails:
+                                if query_lower in email.lower():
+                                    relation_contacts.append({
+                                        'name': f"{relation.capitalize()} - {email.split('@')[0]}",
+                                        'email': email,
+                                        'source': 'saved_relation'
+                                    })
+                    
+            except Exception as e:
+                print(f"Error searching saved relations: {e}")
+        
+        # 3. Merge results (remove duplicates, prioritize saved relations)
+        all_contacts = []
+        seen_emails = set()
+        
+        # Add saved relations first (higher priority)
+        for contact in relation_contacts:
+            if contact['email'] not in seen_emails:
+                all_contacts.append(contact)
+                seen_emails.add(contact['email'])
+        
+        # Add Google Contacts
+        for contact in google_contacts:
+            if contact['email'] not in seen_emails:
+                contact['source'] = 'google_contacts'
+                all_contacts.append(contact)
+                seen_emails.add(contact['email'])
+        
+        print(f"[CONTACT SEARCH] Query='{query}' | Google={len(google_contacts)} | Relations={len(relation_contacts)} | Total={len(all_contacts)}")
 
-        print(f"[CONTACT SEARCH] Query='{query}' | Results={len(contacts)}")
-        for c in contacts:
-            print(f"  - {c['name']} <{c['email']}>")
-
-        return jsonify({'contacts': contacts})
+        return jsonify({'contacts': all_contacts})
 
     except Exception as e:
         print(f"[CONTACT SEARCH ERROR] Query='{query}' | Error={e}")
         return jsonify({'error': 'Failed to search contacts'}), 500
 
+
+# Add this helper function after the get_mediator() function
+
+def get_current_user_email():
+    """Get current user's email from session"""
+    try:
+        if 'google_creds' not in session:
+            return None
+        
+        creds_data = session['google_creds']
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        user_info_service = build('oauth2', 'v2', credentials=creds)
+        user_info = user_info_service.userinfo().get().execute()
+        return user_info.get('email')
+        
+    except Exception as e:
+        print(f"Error fetching user email: {e}")
+        return None
+
+
+def save_email_relationship(user_email, recipient_email, relation):
+    """Save the relationship between user and recipient to Firebase"""
+    if not user_email or not recipient_email or not relation or not db:
+        return False
+    
+    try:
+        user_ref = db.collection('users').document(user_email)
+        user_doc = user_ref.get()
+        
+        if user_doc.exists:
+            user_data = user_doc.to_dict()
+            relations = user_data.get('relations', {})
+            
+            # Update or add the relation
+            if relation not in relations:
+                relations[relation] = []
+            
+            # Add email if not already present
+            if recipient_email not in relations[relation]:
+                relations[relation].append(recipient_email)
+            
+            # Update Firebase
+            user_ref.update({'relations': relations})
+            print(f"Saved relationship: {relation} -> {recipient_email} for user {user_email}")
+            return True
+        else:
+            print(f"User document not found for {user_email}")
+            return False
+            
+    except Exception as e:
+        print(f"Error saving relationship: {e}")
+        return False
+
+
+def get_email_by_relation(user_email, relation):
+    """Get list of emails for a given relation"""
+    if not user_email or not relation or not db:
+        return []
+    
+    try:
+        user_ref = db.collection('users').document(user_email)
+        user_doc = user_ref.get()
+        
+        if user_doc.exists:
+            user_data = user_doc.to_dict()
+            relations = user_data.get('relations', {})
+            
+            # Return list of emails for this relation (case-insensitive match)
+            for key, emails in relations.items():
+                if key.lower() == relation.lower():
+                    return emails
+            
+            return []
+        else:
+            return []
+            
+    except Exception as e:
+        print(f"Error fetching relationship: {e}")
+        return []
+
+
+# Update the /api/email/send endpoint to save relationships
 
 @app.route('/api/email/send', methods=['POST'])
 def send_email():
@@ -233,7 +388,7 @@ def send_email():
         subject = data.get('subject')
         body_text = data.get('body')
         thread_id = data.get('threadId')
-        reply_to_id = data.get('messageId')  # The ID of the message we're replying to
+        reply_to_id = data.get('messageId')
 
         service = get_gmail_service_from_session()
         
@@ -242,10 +397,9 @@ def send_email():
         message['from'] = 'me'
         message['subject'] = subject
         
-        # --- THREADING LOGIC ---
+        # Threading logic
         if reply_to_id:
             try:
-                # Fetch the original message headers
                 original_msg = service.users().messages().get(
                     userId='me', 
                     id=reply_to_id, 
@@ -254,46 +408,54 @@ def send_email():
                 ).execute()
 
                 headers = original_msg.get('payload', {}).get('headers', [])
-                
-                # Get the RFC Message-ID
                 rfc_message_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), None)
-                
-                # Get existing References
                 existing_references = next((h['value'] for h in headers if h['name'] == 'References'), '')
 
                 if rfc_message_id:
-                    # Set In-Reply-To header
                     message['In-Reply-To'] = rfc_message_id
-                    
-                    # Build References chain
                     if existing_references:
                         new_references = existing_references.strip() + ' ' + rfc_message_id
                     else:
                         new_references = rfc_message_id
                     message['References'] = new_references
-                    
                     print(f"Threading headers set - In-Reply-To: {rfc_message_id}")
 
             except Exception as e:
                 print(f"Threading error: {e}")
         
-        # Encode the message
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+        body_payload = {'raw': raw_message}
         
-        body = {'raw': raw_message}
-        
-        # IMPORTANT: Include threadId in the request
         if thread_id:
-            body['threadId'] = thread_id
+            body_payload['threadId'] = thread_id
             print(f"Sending with threadId: {thread_id}")
 
-        # Send the message
         sent_message = service.users().messages().send(
             userId='me',
-            body=body
+            body=body_payload
         ).execute()
 
         print(f"Message sent successfully: {sent_message['id']}")
+        
+        # ===== SAVE RELATIONSHIP TO DATABASE =====
+        try:
+            user_email = get_current_user_email()
+            mediator = get_mediator()
+            recipient_relation = mediator.json_state.get('recipient_relation')
+            
+            if user_email and recipient_relation:
+                # Clean the email (remove any name prefix like "John <email@example.com>")
+                clean_email = to_email
+                if '<' in to_email and '>' in to_email:
+                    clean_email = to_email.split('<')[1].split('>')[0].strip()
+                
+                save_email_relationship(user_email, clean_email, recipient_relation)
+                print(f"Relationship saved: {recipient_relation} -> {clean_email}")
+            else:
+                print("Skipping relationship save - missing user_email or recipient_relation")
+        except Exception as e:
+            print(f"Error saving relationship after send: {e}")
+        
         return jsonify({'success': True, 'id': sent_message['id']})
 
     except Exception as e:
@@ -395,32 +557,35 @@ def advance_mediator():
     if not user_input:
         return jsonify({'success': False, 'error': 'Missing input'}), 400
     
-    # Get user name from Firebase
-    name = "User"  # Default fallback
-    try:
-        if 'google_creds' in session:
-            creds_data = session['google_creds']
-            creds = Credentials(
-                token=creds_data['token'],
-                refresh_token=creds_data.get('refresh_token'),
-                token_uri=creds_data['token_uri'],
-                client_id=creds_data['client_id'],
-                client_secret=creds_data['client_secret'],
-                scopes=creds_data['scopes']
-            )
-            
-            # Get email from Google
-            user_info_service = build('oauth2', 'v2', credentials=creds)
-            user_info = user_info_service.userinfo().get().execute()
-            email = user_info.get('email')
-            
-            # Fetch name from Firebase
-            if email and db:
-                user_doc = db.collection('users').document(email).get()
-                if user_doc.exists:
-                    name = user_doc.to_dict().get('name', 'User')
-    except Exception as e:
-        print(f"Error fetching user name: {e}")
+    # Get user name - use cached session first, then fetch from DB
+    name = session.get('user_info', {}).get('name', 'User')
+    
+    if name == 'User':
+        # Fallback: fetch from database if not in session
+        try:
+            if 'google_creds' in session:
+                creds_data = session['google_creds']
+                creds = Credentials(
+                    token=creds_data['token'],
+                    refresh_token=creds_data.get('refresh_token'),
+                    token_uri=creds_data['token_uri'],
+                    client_id=creds_data['client_id'],
+                    client_secret=creds_data['client_secret'],
+                    scopes=creds_data['scopes']
+                )
+                
+                user_info_service = build('oauth2', 'v2', credentials=creds)
+                user_info = user_info_service.userinfo().get().execute()
+                email = user_info.get('email')
+                name = user_info.get('name', 'User')
+                
+                # Cache in session for future requests
+                session['user_info'] = {
+                    'email': email,
+                    'name': name
+                }
+        except Exception as e:
+            print(f"Error fetching user name: {e}")
     
     state = mediator.advance(user_input + f" sender_name: {name}")
     
