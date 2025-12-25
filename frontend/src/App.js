@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, FileText, Sparkles } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -21,7 +21,14 @@ const GmailComposeApp = () => {
   // Suggest / contacts
   const [suggestions, setSuggestions] = useState([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
+  
+  // NEW: Track which field is currently active for suggestions ('to', 'cc', 'bcc')
   const [activeField, setActiveField] = useState(null);
+
+  // Summarization state
+  const [summary, setSummary] = useState('');
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
 
   // Views: 'inbox' | 'compose' | 'message'
   const [currentView, setCurrentView] = useState('inbox');
@@ -37,11 +44,6 @@ const GmailComposeApp = () => {
   const [showReplyMenu, setShowReplyMenu] = useState(false);
   const [inlineReplyOpen, setInlineReplyOpen] = useState(false);
   const [replyBody, setReplyBody] = useState('');
-
-  // Summarizer State
-  const [summary, setSummary] = useState('');
-  const [isSummarizing, setIsSummarizing] = useState(false);
-  const [showSummary, setShowSummary] = useState(false);
 
   // CC / BCC
   const [ccField, setCcField] = useState('');
@@ -85,23 +87,26 @@ const GmailComposeApp = () => {
     }
   };
 
+  // NEW: Multi-email utilities
   const getLastTerm = (text) => {
     if (!text) return '';
     const parts = text.split(',');
     return parts[parts.length - 1].trim();
   };
 
-  const replaceLastTerm = (text, newEmail) => {
-    const parts = text.split(',');
-    parts.pop(); 
-    parts.push(' ' + newEmail); 
-    return parts.map(p => p.trim()).filter(p => p).join(', ') + ', ';
-  };
-
   const stripHtml = (html) => {
     const tmp = document.createElement("DIV");
     tmp.innerHTML = html;
     return tmp.textContent || tmp.innerText || "";
+  };
+
+  const replaceLastTerm = (text, newEmail) => {
+    const parts = text.split(',');
+    parts.pop(); // Remove partial term
+    parts.push(' ' + newEmail); // Add new email
+    // Join back, filter empty strings if any, and ensure trailing comma/space
+    const result = parts.map(p => p.trim()).filter(p => p).join(', ') + ', ';
+    return result;
   };
 
   /* -------------------------
@@ -153,10 +158,6 @@ const GmailComposeApp = () => {
   }, []);
 
   const loadMessageDetail = useCallback(async (messageId, pushHistory = true) => {
-    // Reset summary state when loading a new message
-    setSummary('');
-    setShowSummary(false);
-    
     try {
       const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
         credentials: 'include'
@@ -222,7 +223,7 @@ const GmailComposeApp = () => {
   useEffect(() => {
     if (!mediatorState || !prevMediatorState) return;
 
-    // Recipient
+    // --- 1. Existing Recipient Logic ---
     if (
       mediatorState.recipient_name &&
       mediatorState.recipient_name !== prevMediatorState.recipient_name &&
@@ -231,33 +232,45 @@ const GmailComposeApp = () => {
       setToField(mediatorState.recipient_name);
     }
 
-    // CC
+    // --- 2. New CC Logic ---
+    // We compare JSON strings to detect if the array content actually changed
     const prevCcParams = JSON.stringify(prevMediatorState.cc || []);
     const newCcParams = JSON.stringify(mediatorState.cc || []);
+
     if (newCcParams !== prevCcParams && Array.isArray(mediatorState.cc) && mediatorState.cc.length > 0) {
+      // Convert list ['a@b.com', 'c@d.com'] into string "a@b.com, c@d.com, "
       const emailsToAdd = mediatorState.cc.join(', ') + ', ';
+      
       setCcField(prev => {
         const cleanPrev = prev ? prev.trim() : '';
         if (!cleanPrev) return emailsToAdd;
-        return cleanPrev.endsWith(',') ? `${cleanPrev} ${emailsToAdd}` : `${cleanPrev}, ${emailsToAdd}`;
+        // Append correctly handling commas
+        return cleanPrev.endsWith(',') 
+          ? `${cleanPrev} ${emailsToAdd}` 
+          : `${cleanPrev}, ${emailsToAdd}`;
       });
+      // Auto-show the CC/BCC fields if the mediator suggests them
       setShowCcBcc(true);
     }
 
-    // BCC
+    // --- 3. New BCC Logic ---
     const prevBccParams = JSON.stringify(prevMediatorState.bcc || []);
     const newBccParams = JSON.stringify(mediatorState.bcc || []);
+
     if (newBccParams !== prevBccParams && Array.isArray(mediatorState.bcc) && mediatorState.bcc.length > 0) {
       const emailsToAdd = mediatorState.bcc.join(', ') + ', ';
+      
       setBccField(prev => {
         const cleanPrev = prev ? prev.trim() : '';
         if (!cleanPrev) return emailsToAdd;
-        return cleanPrev.endsWith(',') ? `${cleanPrev} ${emailsToAdd}` : `${cleanPrev}, ${emailsToAdd}`;
+        return cleanPrev.endsWith(',') 
+          ? `${cleanPrev} ${emailsToAdd}` 
+          : `${cleanPrev}, ${emailsToAdd}`;
       });
       setShowCcBcc(true);
     }
 
-    // Description
+    // --- 4. Existing Description Logic ---
     if (mediatorState.description && mediatorState.description !== prevMediatorState.description) {
       setEmailGenerated(false);
     }
@@ -350,14 +363,16 @@ const GmailComposeApp = () => {
   }, [messages, loadMessageDetail]);
 
   /* -------------------------
-     Contact suggestions
+     Contact suggestions (UPDATED)
      ------------------------- */
   useEffect(() => {
+    // Determine which field text we are looking at
     let currentText = '';
     if (activeField === 'to') currentText = toField;
     else if (activeField === 'cc') currentText = ccField;
     else if (activeField === 'bcc') currentText = bccField;
 
+    // Get the last term (after last comma)
     const term = getLastTerm(currentText);
 
     if (!activeField || term.length < 2) {
@@ -389,10 +404,12 @@ const GmailComposeApp = () => {
   }, [toField, ccField, bccField, activeField]);
 
   /* -------------------------
-     Input handlers
+     Key handling for suggestions (UPDATED)
      ------------------------- */
   const handleKeyDown = (e, fieldType) => {
+    // Only intercept if we have suggestions and this field is active
     if (activeField !== fieldType || suggestions.length === 0) return;
+
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setSelectedIndex(prev => (prev < suggestions.length - 1 ? prev + 1 : prev));
@@ -401,18 +418,26 @@ const GmailComposeApp = () => {
       setSelectedIndex(prev => (prev > 0 ? prev - 1 : -1));
     } else if (e.key === 'Enter' && selectedIndex >= 0) {
       e.preventDefault();
-      selectSuggestion(suggestions[selectedIndex]);
+      const contact = suggestions[selectedIndex];
+      selectSuggestion(contact);
     }
   };
 
   const selectSuggestion = (contact) => {
-    if (activeField === 'to') setToField(prev => replaceLastTerm(prev, contact.email));
-    else if (activeField === 'cc') setCcField(prev => replaceLastTerm(prev, contact.email));
-    else if (activeField === 'bcc') setBccField(prev => replaceLastTerm(prev, contact.email));
+    if (activeField === 'to') {
+      setToField(prev => replaceLastTerm(prev, contact.email));
+    } else if (activeField === 'cc') {
+      setCcField(prev => replaceLastTerm(prev, contact.email));
+    } else if (activeField === 'bcc') {
+      setBccField(prev => replaceLastTerm(prev, contact.email));
+    }
     setSuggestions([]);
     setSelectedIndex(-1);
+    // Note: we don't clear activeField here to allow immediate typing of next email
+    // But typically we might want to refocus the input
   };
 
+  // Helper to handle blur (delayed to allow clicking suggestion)
   const handleBlur = () => {
     setTimeout(() => {
         setActiveField(null);
@@ -421,7 +446,7 @@ const GmailComposeApp = () => {
   };
 
   /* -------------------------
-     Actions (Auth, Send, Summarize)
+     Auth & logout
      ------------------------- */
   const handleAuth = () => {
     setStatus('Redirecting to Google...');
@@ -442,7 +467,6 @@ const GmailComposeApp = () => {
     }
   };
 
-  // --- NEW: Handle Summarize ---
   const handleSummarize = async () => {
     if (!selectedMessage) return;
     setIsSummarizing(true);
@@ -476,6 +500,9 @@ const GmailComposeApp = () => {
     }
   };
 
+  /* -------------------------
+     Compose / Send / Reply
+     ------------------------- */
   const handleCompose = () => {
     setShowCompose(true);
     setCurrentView('compose');
@@ -585,6 +612,76 @@ const GmailComposeApp = () => {
     }
   };
 
+  const handleReply = () => {
+    if (!selectedMessage) return;
+    const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
+    const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
+    const replySubject = selectedMessage.subject && selectedMessage.subject.startsWith('Re:')
+      ? selectedMessage.subject : `Re: ${selectedMessage.subject || ''}`;
+
+    setToField(replyToEmail);
+    setSubject(replySubject);
+    setBody('');
+    setShowCompose(true);
+    setCurrentView('compose');
+    window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose');
+  };
+
+  /* -------------------------
+     Audio recording logic
+     ------------------------- */
+  const handleAudioToggle = async () => {
+    if (!isRecording) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) audioChunksRef.current.push(event.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          const formData = new FormData();
+          formData.append('audio', audioBlob, 'recording.webm');
+
+          try {
+            const response = await fetch(`${API_BASE}/audio/transcribe`, {
+              method: 'POST',
+              credentials: 'include',
+              body: formData
+            });
+            const data = await response.json();
+            if (data.success) {
+              await fetch(`${API_BASE}/mediator/advance`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ input: data.text })
+              });
+            }
+          } catch (err) {
+            console.error('Transcription failed', err);
+          }
+        };
+
+        mediaRecorder.start();
+        mediaRecorderRef.current = mediaRecorder;
+        setIsRecording(true);
+      } catch (err) {
+        console.error('Failed to get audio', err);
+      }
+    } else {
+      if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      mediaRecorderRef.current = null;
+      streamRef.current = null;
+      setIsRecording(false);
+    }
+  };
+
   /* -------------------------
      Render Helper for Suggestions
      ------------------------- */
@@ -596,7 +693,7 @@ const GmailComposeApp = () => {
           <div
             key={contact.email}
             onMouseDown={(e) => {
-                 e.preventDefault(); 
+                 e.preventDefault(); // Prevent blur
                  selectSuggestion(contact);
             }}
             className={`px-4 py-3 cursor-pointer transition-colors border-b last:border-0 ${
@@ -611,67 +708,43 @@ const GmailComposeApp = () => {
     );
   };
 
-  const handleAudioToggle = async () => {
-    // ... (Audio logic remains same) ...
-    // Note: Kept brief for this snippet as requested changes were for summarizer
-    if (!isRecording) {
-        // Start recording logic
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            streamRef.current = stream;
-            const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-            audioChunksRef.current = [];
-            mediaRecorder.ondataavailable = (e) => { if(e.data.size > 0) audioChunksRef.current.push(e.data); };
-            mediaRecorder.onstop = async () => {
-                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-                const formData = new FormData();
-                formData.append('audio', audioBlob, 'recording.webm');
-                try {
-                    const response = await fetch(`${API_BASE}/audio/transcribe`, { method: 'POST', credentials: 'include', body: formData });
-                    const data = await response.json();
-                    if (data.success) {
-                        await fetch(`${API_BASE}/mediator/advance`, {
-                             method: 'POST',
-                             headers: { 'Content-Type': 'application/json' },
-                             credentials: 'include',
-                             body: JSON.stringify({ input: data.text })
-                        });
-                    }
-                } catch (err) { console.error(err); }
-            };
-            mediaRecorder.start();
-            mediaRecorderRef.current = mediaRecorder;
-            setIsRecording(true);
-        } catch(err) { console.error(err); }
-    } else {
-        if(mediaRecorderRef.current) mediaRecorderRef.current.stop();
-        if(streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-        setIsRecording(false);
-    }
-  };
-
   /* -------------------------
-     Main Render
+     UI rendering
      ------------------------- */
   if (!isAuthenticated) {
-     return (
-         // ... (Login Screen remains same) ...
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl p-6 sm:p-8 max-w-md w-full mx-auto">
-                <div className="text-center mb-6">
-                    <div className="inline-block p-4 bg-blue-100 rounded-full mb-4"><Mail className="w-10 h-10 sm:w-12 sm:h-12 text-blue-600" /></div>
-                    <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Gmail Assistant</h1>
-                    <p className="text-sm sm:text-base text-gray-600">Authenticate with Google to access your inbox</p>
-                </div>
-                <button onClick={handleAuth} disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2">
-                    {loading ? 'Authenticating...' : 'Sign in with Google'}
-                </button>
-                {status && <div className="mt-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm text-center">{status}</div>}
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-xl p-6 sm:p-8 max-w-md w-full mx-auto">
+          <div className="text-center mb-6">
+            <div className="inline-block p-4 bg-blue-100 rounded-full mb-4">
+              <Mail className="w-10 h-10 sm:w-12 sm:h-12 text-blue-600" />
             </div>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Gmail Assistant</h1>
+            <p className="text-sm sm:text-base text-gray-600">Authenticate with Google to access your inbox</p>
+          </div>
+
+          <button
+            onClick={handleAuth}
+            disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+            {loading ? 'Authenticating...' : 'Sign in with Google'}
+          </button>
+
+          {status && (
+            <div className="mt-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm text-center">
+              {status}
+            </div>
+          )}
         </div>
-     );
+      </div>
+    );
   }
 
+  /* -------------------------
+     Authenticated UI
+     ------------------------- */
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-3 sticky top-0 z-20">
@@ -685,7 +758,9 @@ const GmailComposeApp = () => {
                <User className="w-4 h-4" />
                <span className="truncate max-w-[150px]">{userEmail}</span>
              </div>
-             <button onClick={handleLogout} className="text-sm text-gray-600 hover:text-gray-800 border px-3 py-1 rounded-md">Logout</button>
+             <button onClick={handleLogout} className="text-sm text-gray-600 hover:text-gray-800 border px-3 py-1 rounded-md">
+               Logout
+             </button>
           </div>
         </div>
       </header>
@@ -701,7 +776,6 @@ const GmailComposeApp = () => {
         {/* --- INBOX VIEW --- */}
         {currentView === 'inbox' && (
           <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-             {/* ... (Inbox header & list remains same) ... */}
             <div className="flex items-center justify-between p-3 sm:p-4 border-b border-gray-200 bg-gray-50 sm:bg-white">
               <div className="flex items-center gap-2">
                 <Inbox className="w-5 h-5 text-gray-600" />
@@ -712,27 +786,44 @@ const GmailComposeApp = () => {
                   <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
                 </button>
                 <button onClick={handleCompose} className="hidden sm:inline-flex bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors items-center gap-2">
-                  <Mail className="w-4 h-4" /> Compose
+                  <Mail className="w-4 h-4" />
+                  Compose
                 </button>
               </div>
             </div>
+
             <div className="divide-y divide-gray-200">
-              {loadingMessages && messages.length === 0 ? <div className="p-8 text-center text-gray-500">Loading...</div> : messages.length === 0 ? <div className="p-8 text-center text-gray-500">No messages found</div> : (
+              {loadingMessages && messages.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">Loading...</div>
+              ) : messages.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">No messages found</div>
+              ) : (
                 <>
                   {messages.map((message) => (
-                    <button key={message.id} onClick={() => loadMessageDetail(message.id)} className={`w-full text-left p-3 sm:p-4 hover:bg-gray-50 cursor-pointer transition-colors ${message.isUnread ? 'bg-blue-50' : ''}`}>
+                    <button
+                      key={message.id}
+                      onClick={() => loadMessageDetail(message.id)}
+                      className={`w-full text-left p-3 sm:p-4 hover:bg-gray-50 cursor-pointer transition-colors ${message.isUnread ? 'bg-blue-50' : ''}`}
+                    >
                       <div className="flex justify-between items-baseline mb-1 gap-2">
-                        <span className={`font-medium text-sm sm:text-base text-gray-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>{extractSenderName(message.from)}</span>
+                        <span className={`font-medium text-sm sm:text-base text-gray-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
+                          {extractSenderName(message.from)}
+                        </span>
                         <div className="flex items-center gap-1 text-xs text-gray-500 flex-shrink-0">
                           {message.isUnread && <span className="w-2 h-2 bg-blue-600 rounded-full mr-1"></span>}
-                          <Clock className="w-3 h-3" /> {formatDate(message.date)}
+                          <Clock className="w-3 h-3" />
+                          {formatDate(message.date)}
                         </div>
                       </div>
                       <div className={`text-sm mb-1 truncate ${message.isUnread ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>{message.subject}</div>
                       <div className="text-sm text-gray-500 line-clamp-2 sm:truncate">{message.snippet}</div>
                     </button>
                   ))}
-                  {nextPageToken && <div className="p-4 text-center"><button onClick={() => loadInbox(nextPageToken)} disabled={loadingMessages} className="text-blue-600 font-medium">Load More</button></div>}
+                  {nextPageToken && (
+                    <div className="p-4 text-center">
+                      <button onClick={() => loadInbox(nextPageToken)} disabled={loadingMessages} className="text-blue-600 font-medium">Load More</button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -970,5 +1061,4 @@ const GmailComposeApp = () => {
     </div>
   );
 };
-
 export default GmailComposeApp;

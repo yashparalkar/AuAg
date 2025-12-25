@@ -23,16 +23,17 @@ class EmailSummarizer:
         self.model = model
 
     def summarize(self, email_text: str) -> str:
-        """
-        Summarize the given email text.
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.SYSTEM_PROMPT},
-                {"role": "user", "content": email_text}
-            ],
-            temperature=0.0
-        )
-
-        return response.choices[0].message.content.strip()
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": email_text}
+                ],
+                temperature=0.0
+            )
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            print(f"OpenAI API Error: {e}")
+            return "Error: Could not generate summary due to an API issue."

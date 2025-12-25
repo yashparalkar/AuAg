@@ -753,7 +753,7 @@ def get_message_detail(message_id):
             'error': str(e)
         }), 500
     
-@app.route('/email/summarize', methods=['POST'])
+@app.route('api/email/summarize', methods=['POST'])
 def summarize_email_route():
     try:
         data = request.json
