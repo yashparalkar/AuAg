@@ -472,18 +472,25 @@ const GmailComposeApp = () => {
     setIsSummarizing(true);
     
     try {
-        // Extract text content from body (strip HTML if necessary)
         const bodyText = selectedMessage.isHtml ? stripHtml(selectedMessage.body) : selectedMessage.body;
         const textToSummarize = `Subject: ${selectedMessage.subject}\n\n${bodyText}`;
 
-        const response = await fetch(`${API_BASE}/email/summarize`, {
+        // Ensure the URL matches your backend route exactly
+        // If your API_BASE already has '/api', use `${API_BASE}/email/summarize`
+        // If API_BASE is just the domain, use `${API_BASE}/api/email/summarize`
+        const response = await fetch(`${API_BASE}/api/email/summarize`, { 
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            // ▼▼▼ THIS LINE IS CRITICAL ▼▼▼
+            headers: { 
+                'Content-Type': 'application/json' 
+            },
+            // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             credentials: 'include',
             body: JSON.stringify({ text: textToSummarize })
         });
 
         const data = await response.json();
+        // ... rest of the function
         if (data.success) {
             setSummary(data.summary);
             setShowSummary(true);

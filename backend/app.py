@@ -753,17 +753,26 @@ def get_message_detail(message_id):
             'error': str(e)
         }), 500
     
+
+summarizer_service = EmailSummarizer()
 @app.route('/api/email/summarize', methods=['POST', 'OPTIONS'])
 def summarize_email_route():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+
     try:
-        data = request.json
+        # force=True tells Flask to ignore the Content-Type header and try to parse JSON anyway
+        data = request.get_json(force=True, silent=True) 
+        
+        if not data:
+            return jsonify({'success': False, 'error': 'No JSON data received'}), 400
+
         text_content = data.get('text', '')
-
+        
         if not text_content:
-            return jsonify({'success': False, 'error': 'Missing text content'}), 400
+            return jsonify({'success': False, 'error': 'Missing text'}), 400
 
-        # Call the static function
-        summary_result = EmailSummarizer.summarize(text_content)
+        summary_result = summarizer_service.summarize(text_content)
 
         return jsonify({
             'success': True,
