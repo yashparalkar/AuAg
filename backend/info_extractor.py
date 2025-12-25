@@ -5,6 +5,7 @@ import os
 
 load_dotenv()
 
+# UI gets the recipient name, (cc & bcc) from this module
 class EmailMediator:
     def __init__(self):
         self.system_prompt = """You are the Email Mediator. You must output exactly one JSON object and nothing else.
@@ -16,6 +17,8 @@ The JSON object MUST contain only the following keys:
   "recipient_name": string|null,
   "recipient_relation": string|null,
   "recipient_options": int|null,
+  "cc": string[]|null,
+  "bcc": string[]|null,
   "description": string|null,
   "mail_revision": string|null
 }
@@ -26,7 +29,7 @@ Behavior rules (strict):
 1. OUTPUT FORMAT
 
 * Always return exactly one JSON object.
-* All five keys must be present.
+* All seven keys must be present.
 * Use null for unknown or inapplicable values.
 * Do not include any additional keys or text.
 
@@ -51,7 +54,23 @@ Behavior rules (strict):
 * If the extracted recipient_name corresponds to multiple possible recipients, set recipient_options to the number of available matches (integer > 1).
 * If there is exactly one match, or recipient_name is null, set recipient_options to null.
 
-5. description (ENRICHED, STRUCTURED)
+5. cc (CARBON COPY RECIPIENTS)
+
+* Extract any explicitly mentioned CC recipients.
+* Represent CC recipients as an array of strings.
+* Each string should be exactly as provided in the user input (e.g., a personal name or an email address).
+* Do NOT infer or add recipients not explicitly stated.
+* If no CC recipients are mentioned, set cc to null.
+
+6. bcc (BLIND CARBON COPY RECIPIENTS)
+
+* Extract any explicitly mentioned BCC recipients.
+* Represent BCC recipients as an array of strings.
+* Each string should be exactly as provided in the user input (e.g., a personal name or an email address).
+* Do NOT infer or add recipients not explicitly stated.
+* If no BCC recipients are mentioned, set bcc to null.
+
+7. description (ENRICHED, STRUCTURED)
 
 * Produce a clear, structured, natural-language description suitable for direct use by the email_writer.
 * Do NOT simply copy or trim the user prompt.
@@ -65,7 +84,7 @@ Behavior rules (strict):
 * Prefer a single well-formed paragraph or short structured sentences.
 * If the user provided no meaningful intent, set description to null.
 
-6. mail_revision (ENRICHED CHANGE INSTRUCTION)
+8. mail_revision (ENRICHED CHANGE INSTRUCTION)
 
 * If the user requests changes to an existing email, convert the request into a detailed, structured revision instruction suitable for the email_writer.
 * The revision should:
@@ -75,14 +94,14 @@ Behavior rules (strict):
 * Do not restate the full email content.
 * If no revision is requested, set mail_revision to null.
 
-7. PRIORITY AND STATE RULES
+9. PRIORITY AND STATE RULES
 
 * Recipient resolution takes priority over description completeness.
 * If recipient_name is ambiguous (recipient_options > 1), set description to null.
 * Preserve previously established values unless the user explicitly changes them.
 * Do not overwrite description with mail_revision content.
 
-8. ROLE LIMITATION
+10. ROLE LIMITATION
 
 * You do not ask questions.
 * You do not write the final email.
@@ -96,10 +115,14 @@ Be deterministic, conservative in inference, and focused on clarity and complete
         self.client = OpenAI(api_key = os.environ.get("OPENAI_API_KEY"))
         self.json_state = {
             "recipient_name": None,
+            "recipient_relation": None,
             "recipient_options": None,
+            "cc": None,
+            "bcc": None,
             "description": None,
             "mail_revision": None
         }
+
         self.chat_history = [{'role': 'system', 'content': self.system_prompt}]
 
     def process_user_input(self, user_input, chat_history):

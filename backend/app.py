@@ -2,6 +2,7 @@
 from flask import Flask, jsonify, request, session, redirect, send_from_directory
 from flask_cors import CORS
 from gmail_oauth import GmailOAuthManager
+from email_summarizer import EmailSummarizer
 import secrets
 from email_agent_service import generate_email_from_description
 from info_extractor import EmailMediator
@@ -463,45 +464,6 @@ def send_email():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-# @app.route('/api/email/send', methods=['POST'])
-# def send_email():
-#     """Send an email"""
-#     try:
-#         data = request.json
-#         to = data.get('to')
-#         subject = data.get('subject')
-#         body = data.get('body', '')
-
-#         if not to or not subject:
-#             return jsonify({
-#                 'success': False,
-#                 'error': 'Missing required fields: to, subject'
-#             }), 400
-
-#         gmail = get_gmail_manager()
-#         if not gmail.creds or not gmail.creds.valid:
-#             return jsonify({
-#                 'success': False,
-#                 'error': 'Not authenticated'
-#             }), 401
-
-#         message_id = gmail.send_email(to, subject, body)
-#         if message_id:
-#             return jsonify({
-#                 'success': True,
-#                 'message_id': message_id
-#             })
-#         else:
-#             return jsonify({
-#                 'success': False,
-#                 'error': 'Failed to send email'
-#             }), 500
-#     except Exception as e:
-#         return jsonify({
-#             'success': False,
-#             'error': str(e)
-#         }), 500
-
 
 def get_mediator():
     session_id = session.get('session_id')
@@ -557,7 +519,6 @@ def advance_mediator():
     if not user_input:
         return jsonify({'success': False, 'error': 'Missing input'}), 400
     
-    # Get user name - use cached session first, then fetch from DB
     name = session.get('user_info', {}).get('name', 'User')
     
     if name == 'User':
@@ -587,7 +548,7 @@ def advance_mediator():
         except Exception as e:
             print(f"Error fetching user name: {e}")
     
-    state = mediator.advance(user_input + f" sender_name: {name}")
+    state = mediator.advance(user_input + f" sender_name: {name}")   # <-- Pass sender's name to mediator, fetched from the DB
     
     return jsonify({
         'success': True,
@@ -791,6 +752,27 @@ def get_message_detail(message_id):
             'success': False,
             'error': str(e)
         }), 500
+    
+@app.route('/email/summarize', methods=['POST'])
+def summarize_email_route():
+    try:
+        data = request.json
+        text_content = data.get('text', '')
+
+        if not text_content:
+            return jsonify({'success': False, 'error': 'Missing text content'}), 400
+
+        # Call the static function
+        summary_result = EmailSummarizer.summarize(text_content)
+
+        return jsonify({
+            'success': True,
+            'summary': summary_result
+        })
+
+    except Exception as e:
+        print(f"API Error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 if __name__ == "__main__":
