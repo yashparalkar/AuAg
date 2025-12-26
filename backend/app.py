@@ -18,6 +18,11 @@ import json
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
 from google_auth_web import (
     build_flow,
     credentials_to_dict,
@@ -142,7 +147,6 @@ def google_callback():
 
                 # 4. Save using merge=True
                 # If user exists: 'relations' is NOT in user_data, so the DB version is preserved
-                # If user is new: 'relations' IS in user_data, so it is created as {}
                 user_ref.set(user_data, merge=True)
             
             # Cache in session for quick access
@@ -388,29 +392,52 @@ def get_email_by_relation(user_email, relation):
         return []
 
 
-# Update the /api/email/send endpoint to save relationships
-
 @app.route('/api/email/send', methods=['POST'])
 def send_email():
     try:
         if not get_gmail_service_from_session():
             return jsonify({'success': False, 'error': 'Auth required'}), 401
 
-        data = request.json
-        to_email = data.get('to')
-        subject = data.get('subject')
-        body_text = data.get('body')
-        thread_id = data.get('threadId')
-        reply_to_id = data.get('messageId')
+        # CHANGED: Use request.form for text data, request.files for attachments
+        to_email = request.form.get('to')
+        subject = request.form.get('subject')
+        body_text = request.form.get('body')
+        thread_id = request.form.get('threadId')
+        reply_to_id = request.form.get('messageId')
+        
+        # Get list of files (matches the formData key 'attachments' from frontend)
+        uploaded_files = request.files.getlist('attachments')
 
         service = get_gmail_service_from_session()
         
-        message = MIMEText(body_text)
+        # CHANGED: Use MIMEMultipart to support attachments
+        message = MIMEMultipart()
         message['to'] = to_email
         message['from'] = 'me'
         message['subject'] = subject
         
-        # Threading logic
+        # Attach the body text
+        message.attach(MIMEText(body_text, 'html')) # Changed to 'html' to support rich text if needed
+
+        # --- ATTACHMENT LOGIC ---
+        if uploaded_files:
+            for file in uploaded_files:
+                try:
+                    # Create MIME base object
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(file.read())
+                    encoders.encode_base64(part)
+                    
+                    # Add header
+                    part.add_header(
+                        'Content-Disposition',
+                        f'attachment; filename="{file.filename}"'
+                    )
+                    message.attach(part)
+                except Exception as e:
+                    print(f"Error attaching file {file.filename}: {e}")
+
+        # --- THREADING LOGIC (Preserved) ---
         if reply_to_id:
             try:
                 original_msg = service.users().messages().get(
@@ -436,6 +463,7 @@ def send_email():
             except Exception as e:
                 print(f"Threading error: {e}")
         
+        # Final encoding for Gmail API
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
         body_payload = {'raw': raw_message}
         
@@ -450,14 +478,13 @@ def send_email():
 
         print(f"Message sent successfully: {sent_message['id']}")
         
-        # ===== SAVE RELATIONSHIP TO DATABASE =====
+        # --- RELATIONSHIP LOGIC (Preserved) ---
         try:
             user_email = get_current_user_email()
             mediator = get_mediator()
             recipient_relation = mediator.json_state.get('recipient_relation')
             
             if user_email and recipient_relation:
-                # Clean the email (remove any name prefix like "John <email@example.com>")
                 clean_email = to_email
                 if '<' in to_email and '>' in to_email:
                     clean_email = to_email.split('<')[1].split('>')[0].strip()

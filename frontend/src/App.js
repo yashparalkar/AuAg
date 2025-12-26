@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -60,6 +60,11 @@ const GmailComposeApp = () => {
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const audioChunksRef = useRef([]);
+
+
+  // file attachment
+  const [attachments, setAttachments] = useState([]);
+  const fileInputRef = useRef(null);
 
   /* -------------------------
      Utility functions
@@ -182,6 +187,33 @@ const GmailComposeApp = () => {
       console.error('Failed to load message:', error);
     }
   }, []);
+
+
+  const handleFileSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      // Convert FileList to Array and append to existing attachments
+      setAttachments(prev => [...prev, ...Array.from(e.target.files)]);
+    }
+  };
+
+  const removeAttachment = (indexToRemove) => {
+    setAttachments(prev => prev.filter((_, index) => index !== indexToRemove));
+  };
+
+  // Helper to format file size (e.g., 1.2 MB)
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  // Clear attachments when closing/sending
+  const clearAttachments = () => {
+      setAttachments([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
   /* -------------------------
      Effects
@@ -548,90 +580,117 @@ const GmailComposeApp = () => {
   };
 
   const sendInlineReply = async () => {
-    if (!replyBody.trim() || !selectedMessage) return;
-    setLoading(true);
-    setStatus('Sending reply...');
-    try {
-      const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
-      const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
-      const response = await fetch(`${API_BASE}/email/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          to: replyToEmail,
-          subject: selectedMessage.subject,
-          body: replyBody,
-          threadId: selectedMessage.threadId,
-          messageId: selectedMessage.id
-        })
-      });
-      const data = await response.json();
-      if (data.success) {
-        setStatus('Reply sent!');
-        setReplyBody('');
-        setInlineReplyOpen(false);
-      } else {
-        setStatus('Failed: ' + (data.error || 'unknown'));
+      if (!replyBody.trim() || !selectedMessage) return;
+      
+      setLoading(true);
+      setStatus('Sending reply...');
+      
+      try {
+        const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
+        const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
+
+        // 1. Create FormData
+        const formData = new FormData();
+
+        // 2. Append text fields
+        formData.append('to', replyToEmail);
+        formData.append('subject', selectedMessage.subject);
+        formData.append('body', replyBody);
+        formData.append('threadId', selectedMessage.threadId);
+        formData.append('messageId', selectedMessage.id);
+
+        // 3. Append attachments
+        attachments.forEach((file) => {
+          formData.append('attachments', file);
+        });
+
+        const response = await fetch(`${API_BASE}/email/send`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData
+        });
+
+        const data = await response.json();
+        
+        if (data.success) {
+          setStatus('Reply sent!');
+          setReplyBody('');
+          setAttachments([]); // Clear attachments
+          setInlineReplyOpen(false);
+        } else {
+          setStatus('Failed: ' + (data.error || 'unknown'));
+        }
+      } catch (error) {
+        console.error(error);
+        setStatus('Error: ' + error.message);
+      } finally {
+        setLoading(false);
+        setTimeout(() => setStatus(''), 2000);
       }
-    } catch (error) {
-      setStatus('Error: ' + error.message);
-    } finally {
-      setLoading(false);
-      setTimeout(() => setStatus(''), 2000);
-    }
   };
 
   const handleSend = async () => {
-    if (!toField || !subject) {
-      setStatus('Please fill in recipient and subject');
-      setTimeout(() => setStatus(''), 2000);
-      return;
-    }
-    setLoading(true);
-    setStatus('Sending email...');
-    try {
-      const response = await fetch(`${API_BASE}/email/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ to: toField, subject, body, cc: ccField, bcc: bccField })
-      });
-      const data = await response.json();
-      if (data.success) {
-        setStatus('Email sent successfully!');
-        setToField('');
-        setCcField('');
-        setBccField('');
-        setSubject('');
-        setBody('');
-        setShowCompose(false);
-        setCurrentView('inbox');
-        pushInboxState();
-      } else {
-        setStatus('Failed to send: ' + (data.error || 'unknown'));
+      if (!toField || !subject) {
+        setStatus('Please fill in recipient and subject');
+        setTimeout(() => setStatus(''), 2000);
+        return;
       }
-    } catch (error) {
-      setStatus('Error: ' + error.message);
-    } finally {
-      setLoading(false);
-      setTimeout(() => setStatus(''), 3000);
-    }
-  };
+      
+      setLoading(true);
+      setStatus('Sending email...');
+      
+      try {
+        // 1. Create FormData object
+        const formData = new FormData();
+        
+        // 2. Append text fields
+        formData.append('to', toField);
+        formData.append('subject', subject);
+        formData.append('body', body);
+        if (ccField) formData.append('cc', ccField);
+        if (bccField) formData.append('bcc', bccField);
+        
+        // 3. Append attachments (if any)
+        // 'attachments' is the key your backend will look for
+        attachments.forEach((file) => {
+          formData.append('attachments', file);
+        });
 
-  const handleReply = () => {
-    if (!selectedMessage) return;
-    const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
-    const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
-    const replySubject = selectedMessage.subject && selectedMessage.subject.startsWith('Re:')
-      ? selectedMessage.subject : `Re: ${selectedMessage.subject || ''}`;
+        // 4. Send request
+        // NOTE: We REMOVED 'Content-Type': 'application/json'
+        // The browser automatically sets the correct multipart boundary
+        const response = await fetch(`${API_BASE}/email/send`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData 
+        });
 
-    setToField(replyToEmail);
-    setSubject(replySubject);
-    setBody('');
-    setShowCompose(true);
-    setCurrentView('compose');
-    window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose');
+        const data = await response.json();
+        
+        if (data.success) {
+          setStatus('Email sent successfully!');
+          // Clear form
+          setToField('');
+          setCcField('');
+          setBccField('');
+          setSubject('');
+          setBody('');
+          setAttachments([]); // Clear attachments state
+          if (fileInputRef.current) fileInputRef.current.value = ""; // Reset file input
+          
+          setShowCompose(false);
+          setCurrentView('inbox');
+          pushInboxState();
+        } else {
+          setStatus('Failed to send: ' + (data.error || 'unknown'));
+        }
+      } catch (error) {
+        console.error(error);
+        setStatus('Error: ' + error.message);
+      } finally {
+        setLoading(false);
+        setTimeout(() => setStatus(''), 3000);
+      }
   };
 
   /* -------------------------
@@ -904,11 +963,23 @@ const GmailComposeApp = () => {
                 </div>
               )}
 
-              <div className="border-t border-gray-200 pt-6 overflow-x-auto mb-6">
+              <div className="border-t border-gray-200 pt-6 mb-6">
                 {selectedMessage.isHtml ? (
-                  <div className="prose prose-sm sm:prose max-w-none text-gray-800" dangerouslySetInnerHTML={{ __html: selectedMessage.body }} />
+                  <div className="w-full overflow-x-auto">
+                    <div 
+                      className="prose prose-sm sm:prose max-w-none text-gray-800
+                                min-w-0 w-full
+                                [&_img]:!max-w-full [&_img]:!h-auto 
+                                [&_table]:!w-full [&_table]:!max-w-full 
+                                [&_td]:!break-word [&_td]:!min-w-0
+                                [&_a]:!break-all"
+                      dangerouslySetInnerHTML={{ __html: selectedMessage.body }} 
+                    />
+                  </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap text-gray-800 font-sans text-sm sm:text-base font-normal">{selectedMessage.body}</pre>
+                  <pre className="whitespace-pre-wrap text-gray-800 font-sans text-sm sm:text-base font-normal break-words overflow-x-auto">
+                    {selectedMessage.body}
+                  </pre>
                 )}
               </div>
 
@@ -926,10 +997,54 @@ const GmailComposeApp = () => {
                       className="w-full min-h-[150px] p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none resize-y mb-4"
                       autoFocus
                     />
-                    <div className="flex gap-3">
-                      <button onClick={sendInlineReply} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded-lg flex items-center gap-2">
-                        <Send className="w-4 h-4" /> {loading ? 'Sending...' : 'Send Reply'}
-                      </button>
+                    {/* ... inside inlineReplyOpen ... */}
+
+                    <div className="p-4">
+                      <textarea
+                        value={replyBody}
+                        onChange={(e) => setReplyBody(e.target.value)}
+                        placeholder="Type your reply here..."
+                        className="w-full min-h-[150px] p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none resize-y mb-4"
+                        autoFocus
+                      />
+
+                      {/* REUSE ATTACHMENT PREVIEW HERE */}
+                      {attachments.length > 0 && (
+                        <div className="mb-4 space-y-2">
+                          {attachments.map((file, index) => (
+                            <div key={index} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg border border-gray-200">
+                              <div className="flex items-center gap-2 overflow-hidden">
+                                <Paperclip className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                                <span className="text-sm font-medium text-gray-700 truncate">{file.name}</span>
+                              </div>
+                              <button onClick={() => removeAttachment(index)} className="text-gray-500 hover:text-red-500"><X className="w-4 h-4" /></button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="flex gap-3 items-center">
+                        {/* Hidden File Input (Ref reused, ensure you reset it if needed or use a separate ref for reply) */}
+                        <input 
+                          type="file" 
+                          id="reply-file-upload"
+                          onChange={handleFileSelect} 
+                          className="hidden" 
+                          multiple 
+                        />
+                        
+                        <button onClick={sendInlineReply} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded-lg flex items-center gap-2">
+                          <Send className="w-4 h-4" /> {loading ? 'Sending...' : 'Send Reply'}
+                        </button>
+
+                        {/* Attach Button for Reply */}
+                        <button 
+                          onClick={() => document.getElementById('reply-file-upload').click()}
+                          className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
+                        >
+                          <Paperclip className="w-5 h-5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -940,7 +1055,6 @@ const GmailComposeApp = () => {
 
         {/* --- COMPOSE VIEW --- */}
         {currentView === 'compose' && (
-          // ... (Compose View remains same) ...
           <div className="fixed inset-0 z-50 bg-white sm:relative sm:z-0 sm:bg-transparent sm:h-auto overflow-y-auto">
             <div className="bg-white sm:rounded-lg sm:shadow-lg min-h-screen sm:min-h-0">
               <div className="flex items-center justify-between p-4 border-b border-gray-200 sticky top-0 bg-white z-10">
@@ -998,11 +1112,57 @@ const GmailComposeApp = () => {
                   <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Compose email..." className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none resize-y min-h-[200px]" />
                 </div>
 
-                <div className="flex gap-3 pt-2">
+                {/* ... inside the Compose View form ... */}
+
+                {/* ATTACHMENT LIST PREVIEW */}
+                {attachments.length > 0 && (
+                  <div className="mb-4 space-y-2">
+                    {attachments.map((file, index) => (
+                      <div key={index} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg border border-gray-200">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <Paperclip className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                          <div className="truncate">
+                            <p className="text-sm font-medium text-gray-700 truncate">{file.name}</p>
+                            <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+                          </div>
+                        </div>
+                        <button onClick={() => removeAttachment(index)} className="p-1 hover:bg-gray-200 rounded-full text-gray-500">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* BUTTONS ROW */}
+                <div className="flex gap-3 pt-2 items-center">
+                  {/* Hidden File Input */}
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleFileSelect} 
+                    className="hidden" 
+                    multiple 
+                  />
+
+                  {/* Send Button */}
                   <button onClick={handleSend} disabled={loading} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-3 px-6 rounded-lg transition-colors inline-flex items-center justify-center gap-2">
                     <Send className="w-4 h-4" /> {loading ? 'Sending...' : 'Send'}
                   </button>
-                  <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); pushInboxState(); }} className="hidden sm:block bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">Cancel</button>
+
+                  {/* Attach Button */}
+                  <button 
+                    onClick={() => fileInputRef.current.click()} 
+                    className="p-3 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
+                    title="Attach file"
+                  >
+                    <Paperclip className="w-5 h-5" />
+                  </button>
+
+                  {/* Cancel Button */}
+                  <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); clearAttachments(); pushInboxState(); }} className="hidden sm:block bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">
+                    Cancel
+                  </button>
                 </div>
               </div>
             </div>
