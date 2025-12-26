@@ -23,6 +23,9 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 
+from flask import send_file
+import io
+
 from google_auth_web import (
     build_flow,
     credentials_to_dict,
@@ -821,6 +824,43 @@ def summarize_email_route():
     except Exception as e:
         print(f"API Error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+
+
+@app.route('/api/email/attachment', methods=['GET'])
+def download_attachment():
+    if not get_gmail_service_from_session():
+        return jsonify({'error': 'Auth required'}), 401
+
+    message_id = request.args.get('messageId')
+    attachment_id = request.args.get('attachmentId')
+    filename = request.args.get('filename', 'download')
+
+    if not message_id or not attachment_id:
+        return jsonify({'error': 'Missing parameters'}), 400
+
+    try:
+        service = get_gmail_service_from_session()
+        
+        # Call Gmail API to get the specific attachment data
+        attachment = service.users().messages().attachments().get(
+            userId='me', 
+            messageId=message_id, 
+            id=attachment_id
+        ).execute()
+
+        file_data = base64.urlsafe_b64decode(attachment['data'].encode('UTF-8'))
+        
+        # Create a file-like object in memory
+        return send_file(
+            io.BytesIO(file_data),
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        print(f"Attachment error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == "__main__":

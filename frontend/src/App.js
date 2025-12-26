@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -92,6 +92,33 @@ const GmailComposeApp = () => {
     }
   };
 
+
+  const handleDownload = async (messageId, attachmentId, filename) => {
+      try {
+          // We use fetch so we can pass credentials (cookies/headers) if needed
+          const response = await fetch(`${API_BASE}/email/attachment?messageId=${messageId}&attachmentId=${attachmentId}&filename=${encodeURIComponent(filename)}`, {
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include', // Important for session cookies
+          });
+
+          if (!response.ok) throw new Error('Download failed');
+
+          // Create a blob from the response and trigger a download
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a); // Required for Firefox
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+      } catch (error) {
+          console.error("Download error:", error);
+          alert("Failed to download attachment");
+      }
+  };
+
   // NEW: Multi-email utilities
   const getLastTerm = (text) => {
     if (!text) return '';
@@ -163,29 +190,39 @@ const GmailComposeApp = () => {
   }, []);
 
   const loadMessageDetail = useCallback(async (messageId, pushHistory = true) => {
-    try {
-      const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
-        credentials: 'include'
-      });
-      const data = await response.json();
-      if (data.success) {
-        const complete = { ...data.message, threadId: data.message.threadId || data.message.id };
-        setSelectedMessage(complete);
-        setCurrentView('message');
+      try {
+        const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
+          credentials: 'include'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+          // --- NEW: Extract attachments from the payload ---
+          const attachments = extractAttachments(data.message.payload);
 
-        setMessages(prev => prev.map(msg => (msg.id === messageId ? { ...msg, isUnread: false } : msg)));
+          // Merge existing message data with threadId fallback AND new attachments
+          const complete = { 
+              ...data.message, 
+              threadId: data.message.threadId || data.message.id,
+              attachments: attachments // <--- Added this
+          };
+          
+          setSelectedMessage(complete);
+          setCurrentView('message');
 
-        if (pushHistory) {
-          window.history.pushState(
-            { view: 'message', messageId },
-            '',
-            `${window.location.pathname}#message-${messageId}`
-          );
+          setMessages(prev => prev.map(msg => (msg.id === messageId ? { ...msg, isUnread: false } : msg)));
+
+          if (pushHistory) {
+            window.history.pushState(
+              { view: 'message', messageId },
+              '',
+              `${window.location.pathname}#message-${messageId}`
+            );
+          }
         }
+      } catch (error) {
+        console.error('Failed to load message:', error);
       }
-    } catch (error) {
-      console.error('Failed to load message:', error);
-    }
   }, []);
 
 
@@ -227,6 +264,37 @@ const GmailComposeApp = () => {
       loadInbox();
     }
   }, [isAuthenticated, currentView, loadInbox]);
+
+  // Helper to recursively find attachments in Gmail's nested payload
+  const extractAttachments = (payload) => {
+    if (!payload) return [];
+    let attachments = [];
+
+    const traverse = (parts) => {
+      if (!parts) return;
+      parts.forEach(part => {
+        // 1. Check if it's a real attachment (has filename & attachmentId)
+        if (part.filename && part.body && part.body.attachmentId) {
+          attachments.push({
+            filename: part.filename,
+            mimeType: part.mimeType,
+            size: part.body.size,
+            attachmentId: part.body.attachmentId
+          });
+        }
+        // 2. If it has sub-parts (like multipart/mixed), look inside them
+        if (part.parts) traverse(part.parts);
+      });
+    };
+
+    // Start traversing if parts exist
+    if (payload.parts) {
+      traverse(payload.parts);
+    }
+    return attachments;
+  };
+
+  
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -1007,6 +1075,39 @@ const GmailComposeApp = () => {
                         className="w-full min-h-[150px] p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none resize-y mb-4"
                         autoFocus
                       />
+
+                      {/* --- ATTACHMENTS SECTION --- */}
+                      {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
+                        <div className="mb-6">
+                          <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+                            <Paperclip className="w-3 h-3" />
+                            {selectedMessage.attachments.length} Attachment{selectedMessage.attachments.length > 1 ? 's' : ''}
+                          </h3>
+                          
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {selectedMessage.attachments.map((att, index) => (
+                              <button
+                                key={index}
+                                onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)}
+                                className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:bg-blue-50 hover:border-blue-200 transition-all group text-left shadow-sm"
+                              >
+                                <div className="bg-gray-100 p-2 rounded-lg group-hover:bg-blue-100 transition-colors">
+                                  <FileText className="w-5 h-5 text-gray-600 group-hover:text-blue-600" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium text-gray-900 truncate" title={att.filename}>
+                                    {att.filename}
+                                  </p>
+                                  <p className="text-xs text-gray-500">
+                                    {att.size ? (att.size / 1024).toFixed(0) + ' KB' : 'Download to view'}
+                                  </p>
+                                </div>
+                                <Download className="w-4 h-4 text-gray-400 group-hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-all" />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       {/* REUSE ATTACHMENT PREVIEW HERE */}
                       {attachments.length > 0 && (
