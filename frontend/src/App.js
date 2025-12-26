@@ -197,20 +197,25 @@ const GmailComposeApp = () => {
         const data = await response.json();
         
         if (data.success) {
-          // --- NEW: Extract attachments from the payload ---
+          // --- Extract attachments from the payload ---
           const attachments = extractAttachments(data.message.payload);
 
           // Merge existing message data with threadId fallback AND new attachments
           const complete = { 
               ...data.message, 
               threadId: data.message.threadId || data.message.id,
-              attachments: attachments // <--- Added this
+              attachments: attachments
           };
           
           setSelectedMessage(complete);
           setCurrentView('message');
 
-          setMessages(prev => prev.map(msg => (msg.id === messageId ? { ...msg, isUnread: false } : msg)));
+          // Update the message in the list to mark as read AND include attachments
+          setMessages(prev => prev.map(msg => 
+            msg.id === messageId 
+              ? { ...msg, isUnread: false, attachments: attachments } 
+              : msg
+          ));
 
           if (pushHistory) {
             window.history.pushState(
@@ -1015,6 +1020,35 @@ const GmailComposeApp = () => {
                 </div>
               </div>
 
+                            {/* --- ATTACHMENTS UI SECTION --- */}
+              {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
+                <div className="mb-6 animate-in fade-in slide-in-from-top-1">
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <Paperclip className="w-3 h-3" />
+                    {selectedMessage.attachments.length} Attachment{selectedMessage.attachments.length > 1 ? 's' : ''}
+                  </h3>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {selectedMessage.attachments.map((att, index) => (
+                      <button
+                        key={index}
+                        onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)}
+                        className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-400 hover:shadow-md transition-all group text-left"
+                      >
+                        <div className="bg-blue-50 p-2 rounded-lg group-hover:bg-blue-100 text-blue-600">
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{att.filename}</p>
+                          <p className="text-xs text-gray-500">{(att.size / 1024).toFixed(0)} KB</p>
+                        </div>
+                        <Download className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* NEW: Summary Display Section */}
               {showSummary && summary && (
                 <div className="mb-6 bg-indigo-50 border border-indigo-200 rounded-lg p-4 animate-in fade-in slide-in-from-top-2">
@@ -1075,39 +1109,6 @@ const GmailComposeApp = () => {
                         className="w-full min-h-[150px] p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none resize-y mb-4"
                         autoFocus
                       />
-
-                      {/* --- ATTACHMENTS SECTION --- */}
-                      {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
-                        <div className="mb-6">
-                          <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 flex items-center gap-2">
-                            <Paperclip className="w-3 h-3" />
-                            {selectedMessage.attachments.length} Attachment{selectedMessage.attachments.length > 1 ? 's' : ''}
-                          </h3>
-                          
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            {selectedMessage.attachments.map((att, index) => (
-                              <button
-                                key={index}
-                                onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)}
-                                className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:bg-blue-50 hover:border-blue-200 transition-all group text-left shadow-sm"
-                              >
-                                <div className="bg-gray-100 p-2 rounded-lg group-hover:bg-blue-100 transition-colors">
-                                  <FileText className="w-5 h-5 text-gray-600 group-hover:text-blue-600" />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-medium text-gray-900 truncate" title={att.filename}>
-                                    {att.filename}
-                                  </p>
-                                  <p className="text-xs text-gray-500">
-                                    {att.size ? (att.size / 1024).toFixed(0) + ' KB' : 'Download to view'}
-                                  </p>
-                                </div>
-                                <Download className="w-4 h-4 text-gray-400 group-hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-all" />
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
 
                       {/* REUSE ATTACHMENT PREVIEW HERE */}
                       {attachments.length > 0 && (
