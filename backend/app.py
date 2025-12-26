@@ -124,13 +124,26 @@ def google_callback():
             # Save to Firebase
             if db:
                 user_ref = db.collection('users').document(email)
-                user_ref.set({
+                
+                # 1. Get the current document snapshot to check existence
+                doc_snap = user_ref.get()
+                
+                # 2. Prepare the data that should ALWAYS be updated
+                user_data = {
                     'email': email,
                     'name': name,
                     'picture': picture,
                     'last_seen': firestore.SERVER_TIMESTAMP,
-                    'relations': {}  # Initialize empty relations on first login
-                }, merge=True)
+                }
+
+                # 3. Only initialize 'relations' if the user DOES NOT exist
+                if not doc_snap.exists:
+                    user_data['relations'] = {} 
+
+                # 4. Save using merge=True
+                # If user exists: 'relations' is NOT in user_data, so the DB version is preserved
+                # If user is new: 'relations' IS in user_data, so it is created as {}
+                user_ref.set(user_data, merge=True)
             
             # Cache in session for quick access
             session['user_info'] = {
@@ -143,12 +156,11 @@ def google_callback():
             print(f"Error fetching/storing user info: {e}")
 
         return redirect("https://auag-assistant.vercel.app")
-        # return redirect("http://localhost:3000")
         
     except Exception as e:
         print(f"OAuth Callback Error: {e}")
         return jsonify({'error': 'Authentication failed', 'details': str(e)}), 500
-
+    
 
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
