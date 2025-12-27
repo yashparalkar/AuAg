@@ -975,40 +975,54 @@ def scheduler_status():
         return jsonify({'error': str(e)}), 500
     
 
+
+
 def run_schedule_checker():
     """Continuously checks Firestore for due emails"""
-    print("🔄 Scheduler Worker Started")
+    print("🔄🔄🔄 Scheduler Worker Started 🔄🔄🔄")
+    print(f"⏰ Starting at: {datetime.now(pytz.utc)}")
     
     while True:
         try:
             # 1. Get current time in UTC
             now_utc = datetime.now(pytz.utc)
+            print(f"\n{'='*60}")
+            print(f"🔍 Checking for due emails at {now_utc}")
             
-            # 2. Query Firestore for pending emails that are due
-            # Note: Firestore queries require a composite index for complex queries. 
-            # If this errors, click the link in the terminal to create the index.
-            docs = get_db().collection('scheduled_emails')\
+            # 2. Query Firestore - DON'T consume the iterator yet
+            docs_stream = get_db().collection('scheduled_emails')\
                 .where('status', '==', 'pending')\
                 .where('scheduled_at', '<=', now_utc)\
                 .stream()
-
-            pending_emails = list(docs)
             
-            # 3. Now you can print the count
+            # Convert to list so we can iterate multiple times if needed
+            pending_emails = list(docs_stream)
+            
+            # 3. Check count
             if len(pending_emails) > 0:
-                print(f"🔎 Found {len(pending_emails)} due emails in database.")
+                print(f"🔎 Found {len(pending_emails)} due email(s) in database!")
             else:
-                print("🔎 No due emails at this time.")
-
-            for doc in docs:
+                print(f"✓ No due emails at this time")
+                print(f"{'='*60}\n")
+                time.sleep(60)
+                continue
+            
+            # 4. Process each email
+            for doc in pending_emails:  # ← Now iterate over the list, not the stream
                 data = doc.to_dict()
                 email_id = doc.id
-                print(f"🚀 Found due email: {email_id}")
-
+                
+                print(f"\n📧 Processing email: {email_id}")
+                print(f"   Scheduled for: {data.get('scheduled_at')}")
+                print(f"   Draft ID: {data.get('draft_id')}")
+                
                 try:
-                    # 3. Reconstruct Credentials
-                    # We stored them inside the document for easy access
+                    # Reconstruct Credentials
                     creds_data = data.get('credentials')
+                    if not creds_data:
+                        raise Exception("No credentials found in document")
+                    
+                    print(f"   1️⃣ Reconstructing credentials...")
                     creds = Credentials(
                         token=creds_data['token'],
                         refresh_token=creds_data.get('refresh_token'),
@@ -1017,43 +1031,83 @@ def run_schedule_checker():
                         client_secret=creds_data['client_secret'],
                         scopes=creds_data['scopes']
                     )
-
-                    # 4. Send the Draft
-                    service = build('gmail', 'v1', credentials=creds)
-                    draft_id = data.get('draft_id')
                     
+                    # Send the Draft
+                    print(f"   2️⃣ Building Gmail service...")
+                    service = build('gmail', 'v1', credentials=creds)
+                    
+                    draft_id = data.get('draft_id')
+                    if not draft_id:
+                        raise Exception("No draft_id found in document")
+                    
+                    print(f"   3️⃣ Sending draft {draft_id}...")
                     sent_msg = service.users().drafts().send(
                         userId='me', 
                         body={'id': draft_id}
                     ).execute()
-
-                    # 5. Update Status to 'sent'
+                    
+                    # Update Status to 'sent'
+                    print(f"   4️⃣ Updating status to 'sent'...")
                     get_db().collection('scheduled_emails').document(email_id).update({
                         'status': 'sent',
                         'sent_at': datetime.now(pytz.utc),
                         'message_id': sent_msg['id']
                     })
-                    print(f"✅ Email {email_id} sent successfully!")
-
+                    
+                    print(f"   ✅✅✅ Email {email_id} sent successfully!")
+                    print(f"   Message ID: {sent_msg['id']}")
+                    
                 except Exception as e:
-                    print(f"❌ Failed to send {email_id}: {e}")
-                    # Mark as failed so we don't retry forever
-                    get_db().collection('scheduled_emails').document(email_id).update({
-                        'status': 'failed',
-                        'error': str(e)
-                    })
-
+                    print(f"   ❌ Failed to send {email_id}:")
+                    print(f"   Error: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    # Mark as failed
+                    try:
+                        get_db().collection('scheduled_emails').document(email_id).update({
+                            'status': 'failed',
+                            'error': str(e),
+                            'failed_at': datetime.now(pytz.utc)
+                        })
+                        print(f"   Marked as failed in database")
+                    except Exception as update_error:
+                        print(f"   ⚠️ Couldn't update status: {update_error}")
+            
+            print(f"{'='*60}\n")
+            
             # Sleep for 60 seconds before checking again
+            print(f"😴 Sleeping for 60 seconds...")
+            time.sleep(60)
+            
+        except Exception as e:
+            print(f"\n⚠️⚠️⚠️ Scheduler Loop Error: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"😴 Sleeping for 60 seconds after error...\n")
             time.sleep(60)
 
-        except Exception as e:
-            print(f"⚠️ Scheduler Loop Error: {e}")
-            time.sleep(60) # Sleep even on error to prevent CPU spike
 
-# Start the background thread
-# Daemon=True ensures the thread dies when the main app stops
-scheduler_thread = threading.Thread(target=run_schedule_checker, daemon=True)
+# Start the background thread with better error handling
+print("🚀 Initializing scheduler thread...")
+
+scheduler_thread = threading.Thread(
+    target=run_schedule_checker, 
+    daemon=True,
+    name="EmailSchedulerThread"
+)
 scheduler_thread.start()
+
+print(f"✅ Scheduler thread started: {scheduler_thread.is_alive()}")
+
+# Add a health check endpoint to verify the thread is running
+@app.route('/api/scheduler/health', methods=['GET'])
+def scheduler_health():
+    return jsonify({
+        'thread_alive': scheduler_thread.is_alive(),
+        'thread_name': scheduler_thread.name,
+        'current_time_utc': str(datetime.now(pytz.utc))
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", debug=True, port=5001)
