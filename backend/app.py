@@ -53,7 +53,15 @@ if not firebase_admin._apps:
         
     firebase_admin.initialize_app(cred)
 
-db = firestore.client()
+# Global variable to hold the client for this specific worker process
+_db_client = None
+
+def get_db():
+    """Lazily initialize Firestore client to avoid gRPC fork issues"""
+    global _db_client
+    if _db_client is None:
+        _db_client = firestore.client()
+    return _db_client
 
 scheduler = BackgroundScheduler(timezone=pytz.utc)
 scheduler.start()
@@ -143,9 +151,9 @@ def google_callback():
             picture = user_info.get('picture', '')
 
             # Save to Firebase
-            if db:
-                user_ref = db.collection('users').document(email)
-                
+            if get_db():
+                user_ref = get_db().collection('users').document(email)
+
                 # 1. Get the current document snapshot to check existence
                 doc_snap = user_ref.get()
                 
@@ -260,9 +268,9 @@ def search_contacts():
         user_email = get_current_user_email()
         relation_contacts = []
         
-        if user_email and db:
+        if user_email and get_db():
             try:
-                user_ref = db.collection('users').document(user_email)
+                user_ref = get_db().collection('users').document(user_email)
                 user_doc = user_ref.get()
                 
                 if user_doc.exists:
@@ -349,11 +357,11 @@ def get_current_user_email():
 
 def save_email_relationship(user_email, recipient_email, relation):
     """Save the relationship between user and recipient to Firebase"""
-    if not user_email or not recipient_email or not relation or not db:
+    if not user_email or not recipient_email or not relation or not get_db():
         return False
     
     try:
-        user_ref = db.collection('users').document(user_email)
+        user_ref = get_db().collection('users').document(user_email)
         user_doc = user_ref.get()
         
         if user_doc.exists:
@@ -383,11 +391,11 @@ def save_email_relationship(user_email, recipient_email, relation):
 
 def get_email_by_relation(user_email, relation):
     """Get list of emails for a given relation"""
-    if not user_email or not relation or not db:
+    if not user_email or not relation or not get_db():
         return []
     
     try:
-        user_ref = db.collection('users').document(user_email)
+        user_ref = get_db().collection('users').document(user_email)
         user_doc = user_ref.get()
         
         if user_doc.exists:
@@ -537,7 +545,7 @@ def send_email():
                 }
 
                 # A4. Save to Firestore
-                doc_ref = db.collection('scheduled_emails').document()
+                doc_ref = get_db().collection('scheduled_emails').document()
                 doc_ref.set({
                     'draft_id': draft_id,
                     'user_email': get_current_user_email(), 
@@ -979,7 +987,7 @@ def run_schedule_checker():
             # 2. Query Firestore for pending emails that are due
             # Note: Firestore queries require a composite index for complex queries. 
             # If this errors, click the link in the terminal to create the index.
-            docs = db.collection('scheduled_emails')\
+            docs = get_db().collection('scheduled_emails')\
                 .where('status', '==', 'pending')\
                 .where('scheduled_at', '<=', now_utc)\
                 .stream()
@@ -1014,7 +1022,7 @@ def run_schedule_checker():
                     ).execute()
 
                     # 5. Update Status to 'sent'
-                    db.collection('scheduled_emails').document(email_id).update({
+                    get_db().collection('scheduled_emails').document(email_id).update({
                         'status': 'sent',
                         'sent_at': datetime.now(pytz.utc),
                         'message_id': sent_msg['id']
@@ -1024,7 +1032,7 @@ def run_schedule_checker():
                 except Exception as e:
                     print(f"❌ Failed to send {email_id}: {e}")
                     # Mark as failed so we don't retry forever
-                    db.collection('scheduled_emails').document(email_id).update({
+                    get_db().collection('scheduled_emails').document(email_id).update({
                         'status': 'failed',
                         'error': str(e)
                     })
