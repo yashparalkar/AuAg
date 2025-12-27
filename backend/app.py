@@ -26,7 +26,7 @@ from email import encoders
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from dateutil import parser
-import pickle
+from datetime import datetime
 import pytz
 
 from google.oauth2.credentials import Credentials
@@ -408,36 +408,46 @@ def get_email_by_relation(user_email, relation):
 
 def send_scheduled_draft_task(credentials_dict, draft_id):
     """Background task to send a scheduled draft"""
+    print(f"\n{'='*80}")
+    print(f"🚀🚀🚀 SCHEDULED TASK TRIGGERED 🚀🚀🚀")
+    print(f"{'='*80}")
+    print(f"📧 Draft ID: {draft_id}")
+    print(f"⏰ Execution time: {datetime.now(pytz.UTC)}")
+    
     try:
-        # Recreate credentials
+        print(f"1️⃣ Reconstructing credentials...")
         creds = Credentials(
-            token=credentials_dict.get('token'),
+            token=credentials_dict['token'],
             refresh_token=credentials_dict.get('refresh_token'),
             token_uri=credentials_dict.get('token_uri'),
             client_id=credentials_dict.get('client_id'),
             client_secret=credentials_dict.get('client_secret'),
             scopes=credentials_dict.get('scopes')
         )
-
-        # Refresh if needed
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-
-        # Build Gmail service and send draft
+        print(f"   ✅ Credentials OK")
+        
+        print(f"2️⃣ Building Gmail service...")
         service = build('gmail', 'v1', credentials=creds)
+        print(f"   ✅ Service built")
+        
+        print(f"3️⃣ Sending draft {draft_id}...")
         sent_message = service.users().drafts().send(
             userId='me',
             body={'id': draft_id}
         ).execute()
-
-        print(f"✅ Scheduled email sent successfully: {sent_message.get('id')}")
+        
+        print(f"✅✅✅ SUCCESS! Email sent!")
+        print(f"   Message ID: {sent_message['id']}")
+        print(f"{'='*80}\n")
         return True
-
+        
     except Exception as e:
-        # If this job needs Flask app context (DB access etc), wrap with app.app_context()
-        print(f"❌ Error sending scheduled email: {e}")
-        import traceback; traceback.print_exc()
-        return False
+        print(f"❌❌❌ TASK EXECUTION FAILED")
+        print(f"   Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print(f"{'='*80}\n")
+        raise 
 
 @app.route('/api/email/send', methods=['POST'])
 def send_email():
