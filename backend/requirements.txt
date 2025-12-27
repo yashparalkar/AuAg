@@ -56,3 +56,5 @@ gunicorn
 werkzeug
 firebase-admin
 python-dotenv
+flask-apscheduler
+python-dateutil

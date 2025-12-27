@@ -23,6 +23,10 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from dateutil import parser
+import datetime
+
 from flask import send_file
 import io
 
@@ -44,6 +48,9 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
+# Initialize Scheduler
+scheduler = BackgroundScheduler()
+scheduler.start()
 
 # BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # FRONTEND_BUILD_DIR = os.path.join(BASE_DIR, "frontend", "build")
@@ -401,110 +408,102 @@ def send_email():
         if not get_gmail_service_from_session():
             return jsonify({'success': False, 'error': 'Auth required'}), 401
 
-        # CHANGED: Use request.form for text data, request.files for attachments
+        # Form Data
         to_email = request.form.get('to')
         subject = request.form.get('subject')
         body_text = request.form.get('body')
         thread_id = request.form.get('threadId')
         reply_to_id = request.form.get('messageId')
+        scheduled_time_str = request.form.get('scheduledTime') # <--- NEW PARAMETER
         
-        # Get list of files (matches the formData key 'attachments' from frontend)
         uploaded_files = request.files.getlist('attachments')
-
         service = get_gmail_service_from_session()
         
-        # CHANGED: Use MIMEMultipart to support attachments
+        # Build Message
         message = MIMEMultipart()
         message['to'] = to_email
         message['from'] = 'me'
         message['subject'] = subject
-        
-        # Attach the body text
-        message.attach(MIMEText(body_text, 'html')) # Changed to 'html' to support rich text if needed
+        message.attach(MIMEText(body_text, 'html'))
 
-        # --- ATTACHMENT LOGIC ---
+        # Attachments
         if uploaded_files:
             for file in uploaded_files:
                 try:
-                    # Create MIME base object
                     part = MIMEBase('application', 'octet-stream')
                     part.set_payload(file.read())
                     encoders.encode_base64(part)
-                    
-                    # Add header
-                    part.add_header(
-                        'Content-Disposition',
-                        f'attachment; filename="{file.filename}"'
-                    )
+                    part.add_header('Content-Disposition', f'attachment; filename="{file.filename}"')
                     message.attach(part)
                 except Exception as e:
                     print(f"Error attaching file {file.filename}: {e}")
 
-        # --- THREADING LOGIC (Preserved) ---
+        # Threading Headers
         if reply_to_id:
             try:
-                original_msg = service.users().messages().get(
-                    userId='me', 
-                    id=reply_to_id, 
-                    format='metadata',
-                    metadataHeaders=['Message-ID', 'References']
-                ).execute()
-
+                original_msg = service.users().messages().get(userId='me', id=reply_to_id, format='metadata', metadataHeaders=['Message-ID', 'References']).execute()
                 headers = original_msg.get('payload', {}).get('headers', [])
                 rfc_message_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), None)
-                existing_references = next((h['value'] for h in headers if h['name'] == 'References'), '')
-
                 if rfc_message_id:
                     message['In-Reply-To'] = rfc_message_id
-                    if existing_references:
-                        new_references = existing_references.strip() + ' ' + rfc_message_id
-                    else:
-                        new_references = rfc_message_id
-                    message['References'] = new_references
-                    print(f"Threading headers set - In-Reply-To: {rfc_message_id}")
-
+                    message['References'] = rfc_message_id
             except Exception as e:
                 print(f"Threading error: {e}")
         
-        # Final encoding for Gmail API
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
         body_payload = {'raw': raw_message}
         
+        # --- SCHEDULING LOGIC ---
+        if scheduled_time_str:
+            try:
+                # 1. Create a Draft (instead of sending immediately)
+                draft_body = {'message': body_payload}
+                if thread_id:
+                    # Note: Drafts.create doesn't support threadId directly in the same way, 
+                    # but usually, it respects the headers in the raw message.
+                    pass 
+
+                draft = service.users().drafts().create(userId='me', body=draft_body).execute()
+                draft_id = draft['id']
+                
+                # 2. Parse Time
+                run_date = parser.parse(scheduled_time_str)
+                
+                # 3. Add to Scheduler (Pass credentials explicitly as session won't exist in background)
+                scheduler.add_job(
+                    send_scheduled_draft_task, 
+                    'date', 
+                    run_date=run_date, 
+                    args=[session['google_creds'], draft_id]
+                )
+                
+                return jsonify({'success': True, 'scheduled': True, 'time': scheduled_time_str})
+                
+            except Exception as e:
+                print(f"Scheduling Error: {e}")
+                return jsonify({'success': False, 'error': f"Failed to schedule: {str(e)}"})
+
+        # --- IMMEDIATE SEND LOGIC ---
         if thread_id:
             body_payload['threadId'] = thread_id
-            print(f"Sending with threadId: {thread_id}")
 
-        sent_message = service.users().messages().send(
-            userId='me',
-            body=body_payload
-        ).execute()
-
-        print(f"Message sent successfully: {sent_message['id']}")
+        sent_message = service.users().messages().send(userId='me', body=body_payload).execute()
         
-        # --- RELATIONSHIP LOGIC (Preserved) ---
+        # Save Relationship (Same as before)
         try:
             user_email = get_current_user_email()
             mediator = get_mediator()
             recipient_relation = mediator.json_state.get('recipient_relation')
-            
             if user_email and recipient_relation:
-                clean_email = to_email
-                if '<' in to_email and '>' in to_email:
-                    clean_email = to_email.split('<')[1].split('>')[0].strip()
-                
+                clean_email = to_email.split('<')[1].split('>')[0].strip() if '<' in to_email else to_email
                 save_email_relationship(user_email, clean_email, recipient_relation)
-                print(f"Relationship saved: {recipient_relation} -> {clean_email}")
-            else:
-                print("Skipping relationship save - missing user_email or recipient_relation")
-        except Exception as e:
-            print(f"Error saving relationship after send: {e}")
+        except: pass
         
         return jsonify({'success': True, 'id': sent_message['id']})
 
     except Exception as e:
         print(f"Send error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 
 def get_mediator():
@@ -860,6 +859,29 @@ def download_attachment():
     except Exception as e:
         print(f"Attachment error: {e}")
         return jsonify({'error': str(e)}), 500
+    
+
+def send_scheduled_draft_task(creds_dict, draft_id):
+    """Background task to send a saved draft"""
+    print(f"Executing scheduled send for Draft ID: {draft_id}")
+    try:
+        # Rebuild credentials since we are in a background thread without session
+        creds = Credentials(
+            token=creds_dict['token'],
+            refresh_token=creds_dict.get('refresh_token'),
+            token_uri=creds_dict['token_uri'],
+            client_id=creds_dict['client_id'],
+            client_secret=creds_dict['client_secret'],
+            scopes=creds_dict['scopes']
+        )
+        service = build('gmail', 'v1', credentials=creds)
+        
+        # Send the draft
+        service.users().drafts().send(userId='me', body={'id': draft_id}).execute()
+        print(f"Successfully sent scheduled draft: {draft_id}")
+        
+    except Exception as e:
+        print(f"Failed to send scheduled draft {draft_id}: {e}")
 
 
 if __name__ == "__main__":

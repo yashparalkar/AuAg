@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Clock, Calendar } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -73,6 +73,11 @@ const GmailComposeApp = () => {
   // file attachment
   const [attachments, setAttachments] = useState([]);
   const fileInputRef = useRef(null);
+
+  // Schedulers
+  // Add this near your other state variables
+  const [scheduleTime, setScheduleTime] = useState('');
+  const [showScheduleInput, setShowScheduleInput] = useState(false);
 
   // Avatar Colors
   const avatarColors = [
@@ -485,25 +490,62 @@ const GmailComposeApp = () => {
   };
 
   const handleSend = async () => {
-    if (!toField || !subject) { setStatus('Please fill in recipient and subject'); setTimeout(() => setStatus(''), 2000); return; }
-    setLoading(true); setStatus('Sending email...');
+    if (!toField || !subject) {
+      setStatus('Please fill in recipient and subject');
+      setTimeout(() => setStatus(''), 2000);
+      return;
+    }
+
+    setLoading(true);
+    // Change status text based on whether it is scheduled
+    setStatus(scheduleTime ? 'Scheduling email...' : 'Sending email...');
+
     try {
       const formData = new FormData();
-      formData.append('to', toField); formData.append('subject', subject);
+      formData.append('to', toField);
+      formData.append('subject', subject);
       formData.append('body', body);
-      if (ccField) formData.append('cc', ccField); if (bccField) formData.append('bcc', bccField);
+      if (ccField) formData.append('cc', ccField);
+      if (bccField) formData.append('bcc', bccField);
       attachments.forEach((file) => formData.append('attachments', file));
-      const response = await fetch(`${API_BASE}/email/send`, { method: 'POST', credentials: 'include', body: formData });
+
+      // --- ADD THIS ---
+      if (scheduleTime) {
+        // Send ISO string to backend
+        formData.append('scheduledTime', new Date(scheduleTime).toISOString());
+      }
+      // ----------------
+
+      const response = await fetch(`${API_BASE}/email/send`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+      });
+      
       const data = await response.json();
+      
       if (data.success) {
-        setStatus('Email sent successfully!'); setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); setAttachments([]);
+        // Updated success message
+        setStatus(data.scheduled ? 'Email successfully scheduled!' : 'Email sent successfully!');
+        
+        // Reset fields
+        setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); setAttachments([]);
+        setScheduleTime(''); setShowScheduleInput(false); // Reset schedule state
+        
         if (fileInputRef.current) fileInputRef.current.value = "";
-        setShowCompose(false); 
-        setCurrentView('inbox'); 
-        pushInboxState(false, 'inbox');
-      } else { setStatus('Failed to send: ' + (data.error || 'unknown')); }
-    } catch (error) { console.error(error); setStatus('Error: ' + error.message); }
-    finally { setLoading(false); setTimeout(() => setStatus(''), 3000); }
+        setShowCompose(false);
+        setCurrentView('inbox');
+        pushInboxState();
+      } else {
+        setStatus('Failed: ' + (data.error || 'unknown'));
+      }
+    } catch (error) {
+      console.error(error);
+      setStatus('Error: ' + error.message);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setStatus(''), 3000);
+    }
   };
 
   /* -------------------------
@@ -786,7 +828,49 @@ const GmailComposeApp = () => {
 
                 <div className="flex gap-3 pt-2 items-center">
                   <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
-                  <button onClick={handleSend} disabled={loading} className="flex-1 sm:flex-none bg-violet-600 hover:bg-violet-700 text-white font-bold py-3.5 px-8 rounded-xl shadow-lg flex items-center justify-center gap-2"><Send className="w-4 h-4" /> Send</button>
+                  
+                  <div className="flex items-center gap-2 flex-1 sm:flex-none">
+                    {/* Send / Schedule Button */}
+                    <button 
+                      onClick={handleSend} 
+                      disabled={loading} 
+                      className={`flex-1 sm:flex-none text-white font-bold py-3.5 px-6 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all ${scheduleTime ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-violet-600 hover:bg-violet-700'}`}
+                    >
+                      {scheduleTime ? <Calendar className="w-4 h-4" /> : <Send className="w-4 h-4" />} 
+                      {scheduleTime ? 'Schedule Send' : 'Send'}
+                    </button>
+
+                    {/* Schedule Toggle Button */}
+                    <button 
+                      onClick={() => setShowScheduleInput(!showScheduleInput)} 
+                      className={`p-3.5 border-2 rounded-xl transition-all ${showScheduleInput || scheduleTime ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                      title="Schedule send"
+                    >
+                      <Clock className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  {/* Date Input Popover */}
+                  {showScheduleInput && (
+                    <div className="absolute bottom-20 left-4 sm:left-auto bg-white p-4 rounded-xl shadow-2xl border border-slate-200 z-50 animate-in slide-in-from-bottom-2">
+                      <div className="text-sm font-bold text-slate-700 mb-2">Pick a time</div>
+                      <input 
+                        type="datetime-local" 
+                        value={scheduleTime}
+                        onChange={(e) => setScheduleTime(e.target.value)}
+                        className="p-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                      {scheduleTime && (
+                        <button 
+                          onClick={() => { setScheduleTime(''); setShowScheduleInput(false); }} 
+                          className="mt-2 text-xs text-red-500 font-bold hover:underline"
+                        >
+                          Clear Schedule
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   <button onClick={() => fileInputRef.current.click()} className="p-3.5 bg-white border-2 border-slate-200 rounded-xl hover:bg-slate-50"><Paperclip className="w-5 h-5" /></button>
                   <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); clearAttachments(); pushInboxState(); }} className="hidden sm:block bg-slate-100 text-slate-700 font-bold py-3.5 px-8 rounded-xl">Cancel</button>
                 </div>
