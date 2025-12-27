@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, MessageSquare } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -21,8 +21,6 @@ const GmailComposeApp = () => {
   // Suggest / contacts
   const [suggestions, setSuggestions] = useState([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  
-  // NEW: Track which field is currently active for suggestions ('to', 'cc', 'bcc')
   const [activeField, setActiveField] = useState(null);
 
   // Summarization state
@@ -50,17 +48,22 @@ const GmailComposeApp = () => {
   const [bccField, setBccField] = useState('');
   const [showCcBcc, setShowCcBcc] = useState(false);
 
-  // Mediator / recording
+  // Mediator / AI State
   const [mediatorState, setMediatorState] = useState(null);
   const [prevMediatorState, setPrevMediatorState] = useState(null);
   const [emailGenerated, setEmailGenerated] = useState(false);
   const [composeContext, setComposeContext] = useState(null);
 
+  // AI Input Modes
+  const [aiMode, setAiMode] = useState('voice'); // 'voice' | 'text'
+  const [aiInstruction, setAiInstruction] = useState('');
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+
+  // Audio Recording
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const audioChunksRef = useRef([]);
-
 
   // file attachment
   const [attachments, setAttachments] = useState([]);
@@ -92,34 +95,28 @@ const GmailComposeApp = () => {
     }
   };
 
-
   const handleDownload = async (messageId, attachmentId, filename) => {
-      try {
-          // We use fetch so we can pass credentials (cookies/headers) if needed
-          const response = await fetch(`${API_BASE}/email/attachment?messageId=${messageId}&attachmentId=${attachmentId}&filename=${encodeURIComponent(filename)}`, {
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'include', // Important for session cookies
-          });
-
-          if (!response.ok) throw new Error('Download failed');
-
-          // Create a blob from the response and trigger a download
-          const blob = await response.blob();
-          const url = window.URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = filename;
-          document.body.appendChild(a); // Required for Firefox
-          a.click();
-          window.URL.revokeObjectURL(url);
-          document.body.removeChild(a);
-      } catch (error) {
-          console.error("Download error:", error);
-          alert("Failed to download attachment");
-      }
+    try {
+      const response = await fetch(`${API_BASE}/email/attachment?messageId=${messageId}&attachmentId=${attachmentId}&filename=${encodeURIComponent(filename)}`, {
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error('Download failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error("Download error:", error);
+      alert("Failed to download attachment");
+    }
   };
 
-  // NEW: Multi-email utilities
   const getLastTerm = (text) => {
     if (!text) return '';
     const parts = text.split(',');
@@ -134,9 +131,8 @@ const GmailComposeApp = () => {
 
   const replaceLastTerm = (text, newEmail) => {
     const parts = text.split(',');
-    parts.pop(); // Remove partial term
-    parts.push(' ' + newEmail); // Add new email
-    // Join back, filter empty strings if any, and ensure trailing comma/space
+    parts.pop();
+    parts.push(' ' + newEmail);
     const result = parts.map(p => p.trim()).filter(p => p).join(', ') + ', ';
     return result;
   };
@@ -162,7 +158,6 @@ const GmailComposeApp = () => {
       const data = await response.json();
       setIsAuthenticated(Boolean(data.authenticated));
       if (data.email) setUserEmail(data.email);
-
       if (data.authenticated) {
         window.history.replaceState({ view: 'inbox' }, '', window.location.pathname + '#inbox');
       }
@@ -190,50 +185,47 @@ const GmailComposeApp = () => {
   }, []);
 
   const loadMessageDetail = useCallback(async (messageId, pushHistory = true) => {
-      try {
-        const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
-          credentials: 'include'
-        });
-        const data = await response.json();
+    // RESET SUMMARY STATE
+    setSummary(''); 
+    setShowSummary(false);
+    setIsSummarizing(false);
+
+    try {
+      const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, {
+        credentials: 'include'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        const attachments = extractAttachments(data.message.payload);
+        const complete = { 
+          ...data.message, 
+          threadId: data.message.threadId || data.message.id,
+          attachments: attachments
+        };
         
-        if (data.success) {
-          // --- Extract attachments from the payload ---
-          const attachments = extractAttachments(data.message.payload);
-
-          // Merge existing message data with threadId fallback AND new attachments
-          const complete = { 
-              ...data.message, 
-              threadId: data.message.threadId || data.message.id,
-              attachments: attachments
-          };
-          
-          setSelectedMessage(complete);
-          setCurrentView('message');
-
-          // Update the message in the list to mark as read AND include attachments
-          setMessages(prev => prev.map(msg => 
-            msg.id === messageId 
-              ? { ...msg, isUnread: false, attachments: attachments } 
-              : msg
-          ));
-
-          if (pushHistory) {
-            window.history.pushState(
-              { view: 'message', messageId },
-              '',
-              `${window.location.pathname}#message-${messageId}`
-            );
-          }
+        setSelectedMessage(complete);
+        setCurrentView('message');
+        setMessages(prev => prev.map(msg => 
+          msg.id === messageId 
+            ? { ...msg, isUnread: false, attachments: attachments } 
+            : msg
+        ));
+        if (pushHistory) {
+          window.history.pushState(
+            { view: 'message', messageId },
+            '',
+            `${window.location.pathname}#message-${messageId}`
+          );
         }
-      } catch (error) {
-        console.error('Failed to load message:', error);
       }
+    } catch (error) {
+      console.error('Failed to load message:', error);
+    }
   }, []);
-
 
   const handleFileSelect = (e) => {
     if (e.target.files && e.target.files.length > 0) {
-      // Convert FileList to Array and append to existing attachments
       setAttachments(prev => [...prev, ...Array.from(e.target.files)]);
     }
   };
@@ -242,7 +234,6 @@ const GmailComposeApp = () => {
     setAttachments(prev => prev.filter((_, index) => index !== indexToRemove));
   };
 
-  // Helper to format file size (e.g., 1.2 MB)
   const formatFileSize = (bytes) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -251,10 +242,9 @@ const GmailComposeApp = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Clear attachments when closing/sending
   const clearAttachments = () => {
-      setAttachments([]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+    setAttachments([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   /* -------------------------
@@ -270,15 +260,12 @@ const GmailComposeApp = () => {
     }
   }, [isAuthenticated, currentView, loadInbox]);
 
-  // Helper to recursively find attachments in Gmail's nested payload
   const extractAttachments = (payload) => {
     if (!payload) return [];
     let attachments = [];
-
     const traverse = (parts) => {
       if (!parts) return;
       parts.forEach(part => {
-        // 1. Check if it's a real attachment (has filename & attachmentId)
         if (part.filename && part.body && part.body.attachmentId) {
           attachments.push({
             filename: part.filename,
@@ -287,19 +274,12 @@ const GmailComposeApp = () => {
             attachmentId: part.body.attachmentId
           });
         }
-        // 2. If it has sub-parts (like multipart/mixed), look inside them
         if (part.parts) traverse(part.parts);
       });
     };
-
-    // Start traversing if parts exist
-    if (payload.parts) {
-      traverse(payload.parts);
-    }
+    if (payload.parts) traverse(payload.parts);
     return attachments;
   };
-
-  
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -317,18 +297,15 @@ const GmailComposeApp = () => {
         console.error('Mediator polling failed', err);
       }
     }, 1000);
-
     return () => {
       mounted = false;
       clearInterval(interval);
     };
   }, [isAuthenticated]);
 
-  // Update fields based on mediator changes
   useEffect(() => {
     if (!mediatorState || !prevMediatorState) return;
 
-    // --- 1. Existing Recipient Logic ---
     if (
       mediatorState.recipient_name &&
       mediatorState.recipient_name !== prevMediatorState.recipient_name &&
@@ -337,45 +314,30 @@ const GmailComposeApp = () => {
       setToField(mediatorState.recipient_name);
     }
 
-    // --- 2. New CC Logic ---
-    // We compare JSON strings to detect if the array content actually changed
     const prevCcParams = JSON.stringify(prevMediatorState.cc || []);
     const newCcParams = JSON.stringify(mediatorState.cc || []);
-
     if (newCcParams !== prevCcParams && Array.isArray(mediatorState.cc) && mediatorState.cc.length > 0) {
-      // Convert list ['a@b.com', 'c@d.com'] into string "a@b.com, c@d.com, "
       const emailsToAdd = mediatorState.cc.join(', ') + ', ';
-      
       setCcField(prev => {
         const cleanPrev = prev ? prev.trim() : '';
         if (!cleanPrev) return emailsToAdd;
-        // Append correctly handling commas
-        return cleanPrev.endsWith(',') 
-          ? `${cleanPrev} ${emailsToAdd}` 
-          : `${cleanPrev}, ${emailsToAdd}`;
+        return cleanPrev.endsWith(',') ? `${cleanPrev} ${emailsToAdd}` : `${cleanPrev}, ${emailsToAdd}`;
       });
-      // Auto-show the CC/BCC fields if the mediator suggests them
       setShowCcBcc(true);
     }
 
-    // --- 3. New BCC Logic ---
     const prevBccParams = JSON.stringify(prevMediatorState.bcc || []);
     const newBccParams = JSON.stringify(mediatorState.bcc || []);
-
     if (newBccParams !== prevBccParams && Array.isArray(mediatorState.bcc) && mediatorState.bcc.length > 0) {
       const emailsToAdd = mediatorState.bcc.join(', ') + ', ';
-      
       setBccField(prev => {
         const cleanPrev = prev ? prev.trim() : '';
         if (!cleanPrev) return emailsToAdd;
-        return cleanPrev.endsWith(',') 
-          ? `${cleanPrev} ${emailsToAdd}` 
-          : `${cleanPrev}, ${emailsToAdd}`;
+        return cleanPrev.endsWith(',') ? `${cleanPrev} ${emailsToAdd}` : `${cleanPrev}, ${emailsToAdd}`;
       });
       setShowCcBcc(true);
     }
 
-    // --- 4. Existing Description Logic ---
     if (mediatorState.description && mediatorState.description !== prevMediatorState.description) {
       setEmailGenerated(false);
     }
@@ -398,7 +360,6 @@ const GmailComposeApp = () => {
 
   useEffect(() => {
     if (!showCompose || emailGenerated || !mediatorState || !mediatorState.description) return;
-
     const generateEmail = async () => {
       setLoading(true);
       setStatus('Generating email...');
@@ -417,7 +378,6 @@ const GmailComposeApp = () => {
         setStatus('');
       }
     };
-
     generateEmail();
   }, [showCompose, mediatorState, emailGenerated]);
 
@@ -443,7 +403,6 @@ const GmailComposeApp = () => {
         }
         return;
       }
-
       if (state.view === 'inbox') {
         setCurrentView('inbox');
         setShowCompose(false);
@@ -462,29 +421,24 @@ const GmailComposeApp = () => {
         setCurrentView('compose');
       }
     };
-
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, [messages, loadMessageDetail]);
 
   /* -------------------------
-     Contact suggestions (UPDATED)
+     Contact suggestions
      ------------------------- */
   useEffect(() => {
-    // Determine which field text we are looking at
     let currentText = '';
     if (activeField === 'to') currentText = toField;
     else if (activeField === 'cc') currentText = ccField;
     else if (activeField === 'bcc') currentText = bccField;
-
-    // Get the last term (after last comma)
     const term = getLastTerm(currentText);
 
     if (!activeField || term.length < 2) {
       setSuggestions([]);
       return;
     }
-
     const controller = new AbortController();
     const searchContacts = async () => {
       try {
@@ -500,7 +454,6 @@ const GmailComposeApp = () => {
         console.error('Contact search failed:', error);
       }
     };
-
     const id = setTimeout(searchContacts, 300);
     return () => {
       clearTimeout(id);
@@ -508,13 +461,8 @@ const GmailComposeApp = () => {
     };
   }, [toField, ccField, bccField, activeField]);
 
-  /* -------------------------
-     Key handling for suggestions (UPDATED)
-     ------------------------- */
   const handleKeyDown = (e, fieldType) => {
-    // Only intercept if we have suggestions and this field is active
     if (activeField !== fieldType || suggestions.length === 0) return;
-
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setSelectedIndex(prev => (prev < suggestions.length - 1 ? prev + 1 : prev));
@@ -529,24 +477,17 @@ const GmailComposeApp = () => {
   };
 
   const selectSuggestion = (contact) => {
-    if (activeField === 'to') {
-      setToField(prev => replaceLastTerm(prev, contact.email));
-    } else if (activeField === 'cc') {
-      setCcField(prev => replaceLastTerm(prev, contact.email));
-    } else if (activeField === 'bcc') {
-      setBccField(prev => replaceLastTerm(prev, contact.email));
-    }
+    if (activeField === 'to') setToField(prev => replaceLastTerm(prev, contact.email));
+    else if (activeField === 'cc') setCcField(prev => replaceLastTerm(prev, contact.email));
+    else if (activeField === 'bcc') setBccField(prev => replaceLastTerm(prev, contact.email));
     setSuggestions([]);
     setSelectedIndex(-1);
-    // Note: we don't clear activeField here to allow immediate typing of next email
-    // But typically we might want to refocus the input
   };
 
-  // Helper to handle blur (delayed to allow clicking suggestion)
   const handleBlur = () => {
     setTimeout(() => {
-        setActiveField(null);
-        setSuggestions([]);
+      setActiveField(null);
+      setSuggestions([]);
     }, 200);
   };
 
@@ -575,40 +516,29 @@ const GmailComposeApp = () => {
   const handleSummarize = async () => {
     if (!selectedMessage) return;
     setIsSummarizing(true);
-    
     try {
-        const bodyText = selectedMessage.isHtml ? stripHtml(selectedMessage.body) : selectedMessage.body;
-        const textToSummarize = `Subject: ${selectedMessage.subject}\n\n${bodyText}`;
-
-        // Ensure the URL matches your backend route exactly
-        // If your API_BASE already has '/api', use `${API_BASE}/email/summarize`
-        // If API_BASE is just the domain, use `${API_BASE}/api/email/summarize`
-        const response = await fetch(`${API_BASE}/api/email/summarize`, { 
-            method: 'POST',
-            // ▼▼▼ THIS LINE IS CRITICAL ▼▼▼
-            headers: { 
-                'Content-Type': 'application/json' 
-            },
-            // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-            credentials: 'include',
-            body: JSON.stringify({ text: textToSummarize })
-        });
-
-        const data = await response.json();
-        // ... rest of the function
-        if (data.success) {
-            setSummary(data.summary);
-            setShowSummary(true);
-        } else {
-            setStatus('Failed to generate summary');
-            setTimeout(() => setStatus(''), 2000);
-        }
-    } catch (error) {
-        console.error('Summarize failed:', error);
-        setStatus('Error summarizing email');
+      const bodyText = selectedMessage.isHtml ? stripHtml(selectedMessage.body) : selectedMessage.body;
+      const textToSummarize = `Subject: ${selectedMessage.subject}\n\n${bodyText}`;
+      const response = await fetch(`${API_BASE}/email/summarize`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ text: textToSummarize })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSummary(data.summary);
+        setShowSummary(true);
+      } else {
+        setStatus('Failed to generate summary');
         setTimeout(() => setStatus(''), 2000);
+      }
+    } catch (error) {
+      console.error('Summarize failed:', error);
+      setStatus('Error summarizing email');
+      setTimeout(() => setStatus(''), 2000);
     } finally {
-        setIsSummarizing(false);
+      setIsSummarizing(false);
     }
   };
 
@@ -623,6 +553,8 @@ const GmailComposeApp = () => {
     setBccField('');
     setSubject('');
     setBody('');
+    setAiInstruction('');
+    setAiMode('voice');
     window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose');
   };
 
@@ -631,18 +563,17 @@ const GmailComposeApp = () => {
     if (!selectedMessage) return;
     const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
     const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
-
     setToField(replyToEmail);
     setSubject(selectedMessage.subject || '');
     setBody('');
+    setAiInstruction('');
+    setAiMode('voice');
     setShowCompose(true);
     setCurrentView('compose');
     window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose');
   };
 
-  const handleReplyClick = () => {
-    setShowReplyMenu(true);
-  };
+  const handleReplyClick = () => setShowReplyMenu(true);
 
   const handleReplyThread = () => {
     setShowReplyMenu(false);
@@ -653,121 +584,92 @@ const GmailComposeApp = () => {
   };
 
   const sendInlineReply = async () => {
-      if (!replyBody.trim() || !selectedMessage) return;
-      
-      setLoading(true);
-      setStatus('Sending reply...');
-      
-      try {
-        const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
-        const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
+    if (!replyBody.trim() || !selectedMessage) return;
+    setLoading(true);
+    setStatus('Sending reply...');
+    try {
+      const emailMatch = selectedMessage.from.match(/<([^>]+)>/);
+      const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from;
+      const formData = new FormData();
+      formData.append('to', replyToEmail);
+      formData.append('subject', selectedMessage.subject);
+      formData.append('body', replyBody);
+      formData.append('threadId', selectedMessage.threadId);
+      formData.append('messageId', selectedMessage.id);
+      attachments.forEach((file) => formData.append('attachments', file));
 
-        // 1. Create FormData
-        const formData = new FormData();
-
-        // 2. Append text fields
-        formData.append('to', replyToEmail);
-        formData.append('subject', selectedMessage.subject);
-        formData.append('body', replyBody);
-        formData.append('threadId', selectedMessage.threadId);
-        formData.append('messageId', selectedMessage.id);
-
-        // 3. Append attachments
-        attachments.forEach((file) => {
-          formData.append('attachments', file);
-        });
-
-        const response = await fetch(`${API_BASE}/email/send`, {
-          method: 'POST',
-          credentials: 'include',
-          body: formData
-        });
-
-        const data = await response.json();
-        
-        if (data.success) {
-          setStatus('Reply sent!');
-          setReplyBody('');
-          setAttachments([]); // Clear attachments
-          setInlineReplyOpen(false);
-        } else {
-          setStatus('Failed: ' + (data.error || 'unknown'));
-        }
-      } catch (error) {
-        console.error(error);
-        setStatus('Error: ' + error.message);
-      } finally {
-        setLoading(false);
-        setTimeout(() => setStatus(''), 2000);
+      const response = await fetch(`${API_BASE}/email/send`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+      });
+      const data = await response.json();
+      if (data.success) {
+        setStatus('Reply sent!');
+        setReplyBody('');
+        setAttachments([]);
+        setInlineReplyOpen(false);
+      } else {
+        setStatus('Failed: ' + (data.error || 'unknown'));
       }
+    } catch (error) {
+      console.error(error);
+      setStatus('Error: ' + error.message);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setStatus(''), 2000);
+    }
   };
 
   const handleSend = async () => {
-      if (!toField || !subject) {
-        setStatus('Please fill in recipient and subject');
-        setTimeout(() => setStatus(''), 2000);
-        return;
-      }
-      
-      setLoading(true);
-      setStatus('Sending email...');
-      
-      try {
-        // 1. Create FormData object
-        const formData = new FormData();
-        
-        // 2. Append text fields
-        formData.append('to', toField);
-        formData.append('subject', subject);
-        formData.append('body', body);
-        if (ccField) formData.append('cc', ccField);
-        if (bccField) formData.append('bcc', bccField);
-        
-        // 3. Append attachments (if any)
-        // 'attachments' is the key your backend will look for
-        attachments.forEach((file) => {
-          formData.append('attachments', file);
-        });
+    if (!toField || !subject) {
+      setStatus('Please fill in recipient and subject');
+      setTimeout(() => setStatus(''), 2000);
+      return;
+    }
+    setLoading(true);
+    setStatus('Sending email...');
+    try {
+      const formData = new FormData();
+      formData.append('to', toField);
+      formData.append('subject', subject);
+      formData.append('body', body);
+      if (ccField) formData.append('cc', ccField);
+      if (bccField) formData.append('bcc', bccField);
+      attachments.forEach((file) => formData.append('attachments', file));
 
-        // 4. Send request
-        // NOTE: We REMOVED 'Content-Type': 'application/json'
-        // The browser automatically sets the correct multipart boundary
-        const response = await fetch(`${API_BASE}/email/send`, {
-          method: 'POST',
-          credentials: 'include',
-          body: formData 
-        });
-
-        const data = await response.json();
-        
-        if (data.success) {
-          setStatus('Email sent successfully!');
-          // Clear form
-          setToField('');
-          setCcField('');
-          setBccField('');
-          setSubject('');
-          setBody('');
-          setAttachments([]); // Clear attachments state
-          if (fileInputRef.current) fileInputRef.current.value = ""; // Reset file input
-          
-          setShowCompose(false);
-          setCurrentView('inbox');
-          pushInboxState();
-        } else {
-          setStatus('Failed to send: ' + (data.error || 'unknown'));
-        }
-      } catch (error) {
-        console.error(error);
-        setStatus('Error: ' + error.message);
-      } finally {
-        setLoading(false);
-        setTimeout(() => setStatus(''), 3000);
+      const response = await fetch(`${API_BASE}/email/send`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData 
+      });
+      const data = await response.json();
+      if (data.success) {
+        setStatus('Email sent successfully!');
+        setToField('');
+        setCcField('');
+        setBccField('');
+        setSubject('');
+        setBody('');
+        setAttachments([]);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        setShowCompose(false);
+        setCurrentView('inbox');
+        pushInboxState();
+      } else {
+        setStatus('Failed to send: ' + (data.error || 'unknown'));
       }
+    } catch (error) {
+      console.error(error);
+      setStatus('Error: ' + error.message);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setStatus(''), 3000);
+    }
   };
 
   /* -------------------------
-     Audio recording logic
+     AI Interaction Logic
      ------------------------- */
   const handleAudioToggle = async () => {
     if (!isRecording) {
@@ -776,16 +678,14 @@ const GmailComposeApp = () => {
         streamRef.current = stream;
         const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
         audioChunksRef.current = [];
-
         mediaRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) audioChunksRef.current.push(event.data);
         };
-
         mediaRecorder.onstop = async () => {
           const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
           const formData = new FormData();
           formData.append('audio', audioBlob, 'recording.webm');
-
+          setIsAiProcessing(true);
           try {
             const response = await fetch(`${API_BASE}/audio/transcribe`, {
               method: 'POST',
@@ -803,9 +703,10 @@ const GmailComposeApp = () => {
             }
           } catch (err) {
             console.error('Transcription failed', err);
+          } finally {
+            setIsAiProcessing(false);
           }
         };
-
         mediaRecorder.start();
         mediaRecorderRef.current = mediaRecorder;
         setIsRecording(true);
@@ -821,26 +722,46 @@ const GmailComposeApp = () => {
     }
   };
 
+  const handleAiTextSubmit = async () => {
+    if (!aiInstruction.trim()) return;
+    setIsAiProcessing(true);
+    try {
+      await fetch(`${API_BASE}/mediator/advance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ input: aiInstruction })
+      });
+      setAiInstruction('');
+    } catch (err) {
+      console.error('Text submission failed', err);
+    } finally {
+      setIsAiProcessing(false);
+    }
+  };
+
   /* -------------------------
-     Render Helper for Suggestions
+     Render Helpers
      ------------------------- */
   const renderSuggestions = (fieldType) => {
     if (activeField !== fieldType || suggestions.length === 0) return null;
     return (
-      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+      <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto">
         {suggestions.map((contact, index) => (
           <div
             key={contact.email}
             onMouseDown={(e) => {
-                 e.preventDefault(); // Prevent blur
-                 selectSuggestion(contact);
+              e.preventDefault();
+              selectSuggestion(contact);
             }}
-            className={`px-4 py-3 cursor-pointer transition-colors border-b last:border-0 ${
-              index === selectedIndex ? 'bg-blue-50 border-l-4 border-blue-600' : 'hover:bg-gray-50'
+            className={`px-4 py-3 cursor-pointer transition-all duration-150 border-b last:border-0 ${
+              index === selectedIndex 
+                ? 'bg-gradient-to-r from-violet-50 to-purple-50 border-l-4 border-violet-500' 
+                : 'hover:bg-slate-50'
             }`}
           >
-            <div className="font-medium text-gray-800">{contact.name}</div>
-            <div className="text-sm text-gray-500">{contact.email}</div>
+            <div className="font-semibold text-slate-800">{contact.name}</div>
+            <div className="text-sm text-slate-500">{contact.email}</div>
           </div>
         ))}
       </div>
@@ -852,27 +773,26 @@ const GmailComposeApp = () => {
      ------------------------- */
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-xl p-6 sm:p-8 max-w-md w-full mx-auto">
-          <div className="text-center mb-6">
-            <div className="inline-block p-4 bg-blue-100 rounded-full mb-4">
-              <Mail className="w-10 h-10 sm:w-12 sm:h-12 text-blue-600" />
+      <div className="min-h-screen bg-gradient-to-br from-violet-100 via-purple-50 to-fuchsia-100 flex items-center justify-center p-4">
+        <div className="bg-white/80 backdrop-blur-xl rounded-2xl shadow-2xl p-8 sm:p-10 max-w-md w-full mx-auto border border-white/20">
+          <div className="text-center mb-8">
+            <div className="inline-block p-5 bg-gradient-to-br from-violet-500 to-purple-600 rounded-2xl mb-5 shadow-lg">
+              <Mail className="w-12 h-12 text-white" />
             </div>
-            <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Gmail Assistant</h1>
-            <p className="text-sm sm:text-base text-gray-600">Authenticate with Google to access your inbox</p>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent mb-2">
+              Echo Mail
+            </h1>
+            <p className="text-slate-600">Connect your Google account to get started</p>
           </div>
-
           <button
             onClick={handleAuth}
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+            className="w-full bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 disabled:from-violet-300 disabled:to-purple-300 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 flex items-center justify-center gap-3 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
           >
-            <svg className="w-5 h-5" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-            {loading ? 'Authenticating...' : 'Sign in with Google'}
+             Sign in with Google
           </button>
-
           {status && (
-            <div className="mt-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm text-center">
+            <div className="mt-5 p-4 bg-violet-50 text-violet-700 rounded-xl text-sm text-center font-medium border border-violet-200">
               {status}
             </div>
           )}
@@ -881,86 +801,106 @@ const GmailComposeApp = () => {
     );
   }
 
-  /* -------------------------
-     Authenticated UI
-     ------------------------- */
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-3 sticky top-0 z-20">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
+      <header className="bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 sm:px-6 py-4 sticky top-0 z-20 shadow-sm">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2 sm:gap-3">
-            <Mail className="w-6 h-6 sm:w-8 sm:h-8 text-blue-600" />
-            <h1 className="text-lg sm:text-xl font-semibold text-gray-800">Gmail Assistant</h1>
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl shadow-md">
+              <Mail className="w-6 h-6 text-white" />
+            </div>
+            <h1 className="text-xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent">
+              Echo Mail
+            </h1>
           </div>
           <div className="flex items-center gap-3">
-             <div className="hidden sm:flex items-center gap-2 text-sm text-gray-600">
-               <User className="w-4 h-4" />
-               <span className="truncate max-w-[150px]">{userEmail}</span>
-             </div>
-             <button onClick={handleLogout} className="text-sm text-gray-600 hover:text-gray-800 border px-3 py-1 rounded-md">
-               Logout
-             </button>
+            <div className="hidden sm:flex items-center gap-2 px-3 py-2 bg-slate-100 rounded-lg">
+              <User className="w-4 h-4 text-slate-600" />
+              <span className="text-sm font-medium text-slate-700 truncate max-w-[150px]">{userEmail}</span>
+            </div>
+            <button onClick={handleLogout} className="text-sm font-medium text-slate-600 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg transition-all duration-200">Logout</button>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 w-full max-w-6xl mx-auto p-2 sm:p-6 pb-24 sm:pb-6">
+      <main className="flex-1 w-full max-w-6xl mx-auto p-4 sm:p-6 pb-24 sm:pb-6">
         {status && (
-          <div className="mb-4 p-3 sm:p-4 bg-green-50 border border-green-200 text-green-700 rounded-lg flex items-center gap-2 text-sm sm:text-base">
-            <Check className="w-5 h-5 flex-shrink-0" />
-            {status}
+          <div className="mb-4 p-4 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 text-emerald-700 rounded-xl flex items-center gap-3 text-sm sm:text-base shadow-sm">
+            <div className="p-1 bg-emerald-500 rounded-full">
+              <Check className="w-4 h-4 text-white flex-shrink-0" />
+            </div>
+            <span className="font-medium">{status}</span>
           </div>
         )}
 
         {/* --- INBOX VIEW --- */}
         {currentView === 'inbox' && (
-          <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-            <div className="flex items-center justify-between p-3 sm:p-4 border-b border-gray-200 bg-gray-50 sm:bg-white">
-              <div className="flex items-center gap-2">
-                <Inbox className="w-5 h-5 text-gray-600" />
-                <h2 className="text-md sm:text-lg font-semibold text-gray-800">Inbox</h2>
+          <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-violet-100 rounded-lg">
+                  <Inbox className="w-5 h-5 text-violet-600" />
+                </div>
+                <h2 className="text-lg font-bold text-slate-800">Inbox</h2>
               </div>
               <div className="flex gap-2">
-                <button onClick={() => loadInbox()} disabled={loadingMessages} className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+                <button 
+                  onClick={() => loadInbox()} 
+                  disabled={loadingMessages} 
+                  className="p-2.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-all duration-200 hover:shadow-md"
+                >
                   <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
                 </button>
-                <button onClick={handleCompose} className="hidden sm:inline-flex bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors items-center gap-2">
-                  <Mail className="w-4 h-4" />
+                <button 
+                  onClick={handleCompose} 
+                  className="hidden sm:inline-flex bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white font-semibold py-2.5 px-5 rounded-lg transition-all duration-200 items-center gap-2 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+                >
+                  <Plus className="w-4 h-4" />
                   Compose
                 </button>
               </div>
             </div>
 
-            <div className="divide-y divide-gray-200">
+            <div className="divide-y divide-slate-100">
               {loadingMessages && messages.length === 0 ? (
-                <div className="p-8 text-center text-gray-500">Loading...</div>
+                <div className="p-12 text-center">
+                  <RefreshCw className="w-8 h-8 text-slate-400 animate-spin mx-auto mb-3" />
+                  <p className="text-slate-500 font-medium">Loading messages...</p>
+                </div>
               ) : messages.length === 0 ? (
-                <div className="p-8 text-center text-gray-500">No messages found</div>
+                <div className="p-12 text-center">
+                  <Inbox className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                  <p className="text-slate-500 font-medium">No messages found</p>
+                </div>
               ) : (
                 <>
                   {messages.map((message) => (
                     <button
                       key={message.id}
                       onClick={() => loadMessageDetail(message.id)}
-                      className={`w-full text-left p-3 sm:p-4 hover:bg-gray-50 cursor-pointer transition-colors ${message.isUnread ? 'bg-blue-50' : ''}`}
+                      className={`w-full text-left p-4 sm:p-5 hover:bg-gradient-to-r hover:from-violet-50 hover:to-purple-50 cursor-pointer transition-all duration-200 group ${
+                        message.isUnread ? 'bg-violet-50/50' : ''
+                      }`}
                     >
-                      <div className="flex justify-between items-baseline mb-1 gap-2">
-                        <span className={`font-medium text-sm sm:text-base text-gray-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
+                      <div className="flex justify-between items-baseline mb-2 gap-3">
+                        <span className={`font-semibold text-sm sm:text-base text-slate-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
                           {extractSenderName(message.from)}
                         </span>
-                        <div className="flex items-center gap-1 text-xs text-gray-500 flex-shrink-0">
-                          {message.isUnread && <span className="w-2 h-2 bg-blue-600 rounded-full mr-1"></span>}
-                          <Clock className="w-3 h-3" />
-                          {formatDate(message.date)}
+                        <div className="flex items-center gap-2 text-xs text-slate-500 flex-shrink-0">
+                          {message.isUnread && <span className="w-2 h-2 bg-violet-500 rounded-full animate-pulse"></span>}
+                          <Clock className="w-3.5 h-3.5" />
+                          <span className="font-medium">{formatDate(message.date)}</span>
                         </div>
                       </div>
-                      <div className={`text-sm mb-1 truncate ${message.isUnread ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>{message.subject}</div>
-                      <div className="text-sm text-gray-500 line-clamp-2 sm:truncate">{message.snippet}</div>
+                      <div className={`text-sm sm:text-base mb-1.5 truncate ${message.isUnread ? 'font-semibold text-slate-900' : 'text-slate-700 font-medium'}`}>
+                        {message.subject}
+                      </div>
+                      <div className="text-sm text-slate-500 line-clamp-2">{message.snippet}</div>
                     </button>
                   ))}
                   {nextPageToken && (
-                    <div className="p-4 text-center">
-                      <button onClick={() => loadInbox(nextPageToken)} disabled={loadingMessages} className="text-blue-600 font-medium">Load More</button>
+                    <div className="p-5 text-center bg-slate-50">
+                      <button onClick={() => loadInbox(nextPageToken)} disabled={loadingMessages} className="text-violet-600 font-semibold hover:text-violet-700 px-6 py-2 hover:bg-white rounded-lg transition-all duration-200">Load More</button>
                     </div>
                   )}
                 </>
@@ -969,184 +909,153 @@ const GmailComposeApp = () => {
           </div>
         )}
 
-        {/* --- MESSAGE DETAIL VIEW (UPDATED) --- */}
+        {/* --- MESSAGE DETAIL VIEW --- */}
         {currentView === 'message' && selectedMessage && (
-          <div className="bg-white rounded-lg shadow-lg flex flex-col h-full sm:h-auto pb-4">
-            <div className="flex items-center justify-between p-3 sm:p-4 border-b border-gray-200 sticky top-0 bg-white z-10">
+          <div className="bg-white rounded-2xl shadow-xl flex flex-col h-full sm:h-auto pb-4 border border-slate-200">
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
               <button
                 onClick={() => {
                   setCurrentView('inbox');
                   setSelectedMessage(null);
                   setInlineReplyOpen(false);
+                  setSummary(''); 
+                  setShowSummary(false);
                   pushInboxState();
                 }}
-                className="flex items-center gap-2 text-gray-600 hover:text-gray-800 py-2"
+                className="flex items-center gap-2 text-slate-600 hover:text-slate-900 py-2 px-3 hover:bg-slate-100 rounded-lg transition-all duration-200"
               >
                 <ArrowLeft className="w-5 h-5" />
-                <span className="hidden sm:inline">Back</span>
+                <span className="hidden sm:inline font-medium">Back</span>
               </button>
 
               <div className="flex items-center gap-2">
-                {/* NEW: Summarize Button */}
                 <button
                   onClick={handleSummarize}
                   disabled={isSummarizing}
-                  className="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-medium py-2 px-3 sm:px-4 rounded-lg flex items-center gap-2 transition-colors"
+                  className="bg-gradient-to-r from-indigo-100 to-purple-100 hover:from-indigo-200 hover:to-purple-200 text-indigo-700 font-semibold py-2.5 px-4 rounded-lg flex items-center gap-2 transition-all duration-200 shadow-sm hover:shadow-md"
                 >
-                  {isSummarizing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                  {isSummarizing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                   <span className="hidden sm:inline">Summarize</span>
                 </button>
-
                 <button
-                    onClick={handleReplyClick}
-                    className="hidden sm:flex bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg items-center gap-2"
+                  onClick={handleReplyClick}
+                  className="hidden sm:flex bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white font-semibold py-2.5 px-5 rounded-lg items-center gap-2 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200"
                 >
-                    <Reply className="w-4 h-4" /> Reply
+                  <Reply className="w-4 h-4" /> Reply
                 </button>
               </div>
             </div>
 
-            <div className="p-4 sm:p-6 overflow-y-auto">
-              <h2 className="text-lg sm:text-2xl font-semibold text-gray-900 mb-4 break-words">{selectedMessage.subject}</h2>
+            <div className="p-5 sm:p-7 overflow-y-auto">
+              <h2 className="text-xl sm:text-3xl font-bold text-slate-900 mb-5 break-words leading-tight">
+                {selectedMessage.subject}
+              </h2>
               
-              <div className="mb-6 space-y-2 bg-gray-50 p-3 rounded-lg text-xs sm:text-sm">
-                <div className="flex flex-col sm:flex-row gap-1">
-                  <span className="font-medium text-gray-700 min-w-[3rem]">From:</span>
-                  <span className="text-gray-600 break-all">{selectedMessage.from}</span>
+              <div className="mb-6 space-y-3 bg-gradient-to-r from-slate-50 to-slate-100 p-4 rounded-xl border border-slate-200 text-sm">
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <span className="font-bold text-slate-700 min-w-[4rem]">From:</span>
+                  <span className="text-slate-600 break-all font-medium">{selectedMessage.from}</span>
                 </div>
-                <div className="flex flex-col sm:flex-row gap-1">
-                  <span className="font-medium text-gray-700 min-w-[3rem]">To:</span>
-                  <span className="text-gray-600 break-all">{selectedMessage.to}</span>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <span className="font-bold text-slate-700 min-w-[4rem]">To:</span>
+                  <span className="text-slate-600 break-all font-medium">{selectedMessage.to}</span>
                 </div>
               </div>
 
-                            {/* --- ATTACHMENTS UI SECTION --- */}
               {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
-                <div className="mb-6 animate-in fade-in slide-in-from-top-1">
-                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-2">
-                    <Paperclip className="w-3 h-3" />
+                <div className="mb-6">
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <Paperclip className="w-4 h-4" />
                     {selectedMessage.attachments.length} Attachment{selectedMessage.attachments.length > 1 ? 's' : ''}
                   </h3>
-
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {selectedMessage.attachments.map((att, index) => (
                       <button
                         key={index}
                         onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)}
-                        className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-400 hover:shadow-md transition-all group text-left"
+                        className="flex items-center gap-3 p-4 bg-gradient-to-r from-slate-50 to-slate-100 border border-slate-200 rounded-xl hover:border-violet-400 hover:shadow-lg transition-all duration-200 group text-left transform hover:-translate-y-0.5"
                       >
-                        <div className="bg-blue-50 p-2 rounded-lg group-hover:bg-blue-100 text-blue-600">
+                        <div className="bg-violet-100 p-3 rounded-lg group-hover:bg-violet-200 text-violet-600 transition-colors">
                           <FileText className="w-5 h-5" />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-900 truncate">{att.filename}</p>
-                          <p className="text-xs text-gray-500">{(att.size / 1024).toFixed(0)} KB</p>
+                          <p className="text-sm font-semibold text-slate-900 truncate">{att.filename}</p>
+                          <p className="text-xs text-slate-500 font-medium">{(att.size / 1024).toFixed(0)} KB</p>
                         </div>
-                        <Download className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
+                        <Download className="w-4 h-4 text-slate-400 group-hover:text-violet-600 transition-colors" />
                       </button>
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* NEW: Summary Display Section */}
               {showSummary && summary && (
-                <div className="mb-6 bg-indigo-50 border border-indigo-200 rounded-lg p-4 animate-in fade-in slide-in-from-top-2">
-                    <div className="flex justify-between items-start mb-2">
-                        <div className="flex items-center gap-2 text-indigo-800 font-semibold">
-                            <Sparkles className="w-4 h-4" />
-                            <h3>AI Summary</h3>
-                        </div>
-                        <button onClick={() => setShowSummary(false)} className="text-indigo-400 hover:text-indigo-600">
-                            <X className="w-4 h-4" />
-                        </button>
+                <div className="mb-6 bg-gradient-to-r from-indigo-50 to-purple-50 border-2 border-indigo-200 rounded-xl p-5 shadow-lg">
+                  <div className="flex justify-between items-start mb-3">
+                    <div className="flex items-center gap-2 text-indigo-800 font-bold">
+                      <div className="p-1.5 bg-indigo-500 rounded-lg">
+                        <Sparkles className="w-4 h-4 text-white" />
+                      </div>
+                      <h3>AI Summary</h3>
                     </div>
-                    <p className="text-indigo-900 text-sm leading-relaxed whitespace-pre-wrap">{summary}</p>
+                    <button onClick={() => setShowSummary(false)} className="text-indigo-400 hover:text-indigo-600 p-1 hover:bg-indigo-100 rounded-lg transition-all">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-indigo-900 text-sm leading-relaxed whitespace-pre-wrap font-medium">{summary}</p>
                 </div>
               )}
 
-              <div className="border-t border-gray-200 pt-6 mb-6">
+              <div className="border-t-2 border-slate-200 pt-6 mb-6">
                 {selectedMessage.isHtml ? (
                   <div className="w-full overflow-x-auto">
                     <div 
-                      className="prose prose-sm sm:prose max-w-none text-gray-800
-                                min-w-0 w-full
-                                [&_img]:!max-w-full [&_img]:!h-auto 
-                                [&_table]:!w-full [&_table]:!max-w-full 
-                                [&_td]:!break-word [&_td]:!min-w-0
-                                [&_a]:!break-all"
+                      className="prose prose-sm sm:prose max-w-none text-slate-800 min-w-0 w-full [&_img]:!max-w-full [&_img]:!h-auto"
                       dangerouslySetInnerHTML={{ __html: selectedMessage.body }} 
                     />
                   </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap text-gray-800 font-sans text-sm sm:text-base font-normal break-words overflow-x-auto">
+                  <pre className="whitespace-pre-wrap text-slate-800 font-sans text-sm sm:text-base font-normal break-words overflow-x-auto leading-relaxed">
                     {selectedMessage.body}
                   </pre>
                 )}
               </div>
 
               {inlineReplyOpen && (
-                <div className="mt-6 border border-gray-300 rounded-lg shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-300">
-                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-300 flex justify-between items-center rounded-t-lg">
-                    <span className="text-sm font-medium text-gray-700">Replying to {extractSenderName(selectedMessage.from)}</span>
-                    <button onClick={() => setInlineReplyOpen(false)} className="text-gray-500 hover:text-gray-700"><X className="w-4 h-4" /></button>
+                <div className="mt-6 border-2 border-violet-200 rounded-xl shadow-xl overflow-hidden">
+                  <div className="bg-gradient-to-r from-violet-50 to-purple-50 px-5 py-3 border-b-2 border-violet-200 flex justify-between items-center">
+                    <span className="text-sm font-bold text-violet-800">Replying to {extractSenderName(selectedMessage.from)}</span>
+                    <button onClick={() => setInlineReplyOpen(false)} className="text-violet-500 hover:text-violet-700 p-1 hover:bg-violet-100 rounded-lg transition-all"><X className="w-4 h-4" /></button>
                   </div>
-                  <div className="p-4">
+                  <div className="p-5">
                     <textarea
                       value={replyBody}
                       onChange={(e) => setReplyBody(e.target.value)}
                       placeholder="Type your reply here..."
-                      className="w-full min-h-[150px] p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none resize-y mb-4"
+                      className="w-full min-h-[150px] p-4 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none resize-y mb-4 font-medium text-slate-800"
                       autoFocus
                     />
-                    {/* ... inside inlineReplyOpen ... */}
-
-                    <div className="p-4">
-                      <textarea
-                        value={replyBody}
-                        onChange={(e) => setReplyBody(e.target.value)}
-                        placeholder="Type your reply here..."
-                        className="w-full min-h-[150px] p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none resize-y mb-4"
-                        autoFocus
-                      />
-
-                      {/* REUSE ATTACHMENT PREVIEW HERE */}
-                      {attachments.length > 0 && (
-                        <div className="mb-4 space-y-2">
-                          {attachments.map((file, index) => (
-                            <div key={index} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg border border-gray-200">
-                              <div className="flex items-center gap-2 overflow-hidden">
-                                <Paperclip className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                                <span className="text-sm font-medium text-gray-700 truncate">{file.name}</span>
-                              </div>
-                              <button onClick={() => removeAttachment(index)} className="text-gray-500 hover:text-red-500"><X className="w-4 h-4" /></button>
+                    {attachments.length > 0 && (
+                      <div className="mb-4 space-y-2">
+                        {attachments.map((file, index) => (
+                          <div key={index} className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-200">
+                            <div className="flex items-center gap-3 overflow-hidden">
+                              <Paperclip className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                              <span className="text-sm font-semibold text-slate-700 truncate">{file.name}</span>
                             </div>
-                          ))}
-                        </div>
-                      )}
-
-                      <div className="flex gap-3 items-center">
-                        {/* Hidden File Input (Ref reused, ensure you reset it if needed or use a separate ref for reply) */}
-                        <input 
-                          type="file" 
-                          id="reply-file-upload"
-                          onChange={handleFileSelect} 
-                          className="hidden" 
-                          multiple 
-                        />
-                        
-                        <button onClick={sendInlineReply} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded-lg flex items-center gap-2">
-                          <Send className="w-4 h-4" /> {loading ? 'Sending...' : 'Send Reply'}
-                        </button>
-
-                        {/* Attach Button for Reply */}
-                        <button 
-                          onClick={() => document.getElementById('reply-file-upload').click()}
-                          className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
-                        >
-                          <Paperclip className="w-5 h-5" />
-                        </button>
+                            <button onClick={() => removeAttachment(index)} className="text-slate-500 hover:text-red-500 p-1 hover:bg-red-50 rounded transition-all"><X className="w-4 h-4" /></button>
+                          </div>
+                        ))}
                       </div>
+                    )}
+                    <div className="flex gap-3 items-center">
+                      <input type="file" id="reply-file-upload" onChange={handleFileSelect} className="hidden" multiple />
+                      <button onClick={sendInlineReply} disabled={loading} className="bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 disabled:from-violet-300 disabled:to-purple-300 text-white font-bold py-3 px-6 rounded-xl flex items-center gap-2 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200">
+                        <Send className="w-4 h-4" /> {loading ? 'Sending...' : 'Send Reply'}
+                      </button>
+                      <button onClick={() => document.getElementById('reply-file-upload').click()} className="p-3 text-slate-600 hover:bg-slate-100 rounded-xl transition-all duration-200 border-2 border-slate-200 hover:border-violet-300">
+                        <Paperclip className="w-5 h-5" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1158,113 +1067,161 @@ const GmailComposeApp = () => {
         {/* --- COMPOSE VIEW --- */}
         {currentView === 'compose' && (
           <div className="fixed inset-0 z-50 bg-white sm:relative sm:z-0 sm:bg-transparent sm:h-auto overflow-y-auto">
-            <div className="bg-white sm:rounded-lg sm:shadow-lg min-h-screen sm:min-h-0">
-              <div className="flex items-center justify-between p-4 border-b border-gray-200 sticky top-0 bg-white z-10">
-                <h2 className="text-lg font-semibold text-gray-800">New Message</h2>
-                <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); pushInboxState(); }} className="p-2 -mr-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-full">
+            <div className="bg-white sm:rounded-2xl sm:shadow-xl min-h-screen sm:min-h-0 sm:border sm:border-slate-200">
+              <div className="flex items-center justify-between p-5 border-b border-slate-200 sticky top-0 bg-gradient-to-r from-violet-50 to-purple-50 z-10 sm:rounded-t-2xl">
+                <h2 className="text-lg font-bold text-slate-800">New Message</h2>
+                <button 
+                  onClick={() => { 
+                    setShowCompose(false); 
+                    setCurrentView('inbox'); 
+                    pushInboxState(); 
+                  }} 
+                  className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-200 rounded-lg transition-all"
+                >
                   <X className="w-6 h-6" />
                 </button>
               </div>
 
-              <div className="p-4 sm:p-6 pb-24">
-                <div className="hidden sm:block mb-6 bg-indigo-50 border border-indigo-100 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold text-indigo-900">Voice Assistant</h3>
-                    {isRecording && <span className="text-xs text-red-600 font-bold animate-pulse">● Recording...</span>}
+              <div className="p-5 sm:p-7 pb-24">
+                {/* --- AI ASSISTANT BLOCK --- */}
+                <div className="hidden sm:block mb-6 bg-gradient-to-r from-indigo-50 to-purple-50 border-2 border-indigo-200 rounded-xl overflow-hidden shadow-md">
+                  <div className="px-5 py-3 border-b border-indigo-100 flex items-center justify-between bg-white/50">
+                    <h3 className="text-sm font-bold text-indigo-900 flex items-center gap-2">
+                      <Sparkles className="w-4 h-4" />
+                      AI Assistant
+                    </h3>
+                    <div className="flex bg-slate-200 p-1 rounded-lg">
+                      <button 
+                        onClick={() => setAiMode('voice')} 
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                          aiMode === 'voice' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        Voice
+                      </button>
+                      <button 
+                        onClick={() => setAiMode('text')}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                          aiMode === 'text' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        Text
+                      </button>
+                    </div>
                   </div>
-                  <button onClick={handleAudioToggle} className={`w-full py-3 rounded-lg font-medium text-white transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2 ${isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                    {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                    {isRecording ? 'Stop Recording' : 'Tap to Speak'}
-                  </button>
+
+                  <div className="p-5">
+                    {aiMode === 'voice' ? (
+                      <>
+                        <div className="flex justify-between items-center mb-3">
+                           <span className="text-xs text-indigo-600 font-semibold">Speak your request to generate an email</span>
+                           {isRecording && (
+                             <span className="text-xs text-red-600 font-bold animate-pulse flex items-center gap-1">
+                               <span className="w-2 h-2 bg-red-600 rounded-full"></span>
+                               Recording...
+                             </span>
+                           )}
+                           {isAiProcessing && (
+                             <span className="text-xs text-indigo-600 font-bold animate-pulse">Processing...</span>
+                           )}
+                        </div>
+                        <button 
+                          onClick={handleAudioToggle} 
+                          disabled={isAiProcessing}
+                          className={`w-full py-4 rounded-xl font-bold text-white transition-all shadow-lg hover:shadow-xl active:scale-95 flex items-center justify-center gap-2 ${
+                            isRecording 
+                              ? 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700' 
+                              : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700'
+                          }`}
+                        >
+                          {isRecording ? <Square className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                          {isRecording ? 'Stop Recording' : 'Tap to Speak'}
+                        </button>
+                      </>
+                    ) : (
+                      <div className="space-y-3">
+                        <textarea
+                          value={aiInstruction}
+                          onChange={(e) => setAiInstruction(e.target.value)}
+                          placeholder="e.g., Write a polite email asking for a meeting next Tuesday..."
+                          className="w-full p-3 rounded-xl border border-indigo-200 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm resize-none h-24 bg-white"
+                        />
+                        <button
+                          onClick={handleAiTextSubmit}
+                          disabled={isAiProcessing || !aiInstruction.trim()}
+                          className="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-bold text-sm shadow-md hover:shadow-lg disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                        >
+                          {isAiProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                          Generate
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="mb-4 relative">
-                  <div className="flex justify-between items-center mb-1">
-                    <label className="text-sm font-medium text-gray-700">To</label>
-                    <button type="button" onClick={() => setShowCcBcc(prev => !prev)} className="text-xs text-blue-600 hover:underline px-2 py-1">{showCcBcc ? 'Hide CC/BCC' : 'Add CC/BCC'}</button>
+                {/* --- STANDARD FORM FIELDS --- */}
+                <div className="mb-5 relative">
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="text-sm font-bold text-slate-700">To</label>
+                    <button type="button" onClick={() => setShowCcBcc(prev => !prev)} className="text-xs font-semibold text-violet-600 hover:text-violet-800 px-3 py-1.5 hover:bg-violet-50 rounded-lg transition-all">{showCcBcc ? 'Hide CC/BCC' : 'Add CC/BCC'}</button>
                   </div>
                   <div className="relative">
-                    <input type="text" value={toField} onChange={(e) => setToField(e.target.value)} onFocus={() => setActiveField('to')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'to')} placeholder="Recipient email(s)" className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" autoComplete="off" />
+                    <input type="text" value={toField} onChange={(e) => setToField(e.target.value)} onFocus={() => setActiveField('to')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'to')} placeholder="Recipient email(s)" className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none font-medium text-slate-800" autoComplete="off" />
                     {renderSuggestions('to')}
                   </div>
                 </div>
 
                 {showCcBcc && (
-                  <div className="mb-4 space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="mb-5 space-y-4">
                     <div className="relative">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">CC</label>
-                      <input type="text" value={ccField} onChange={(e) => setCcField(e.target.value)} onFocus={() => setActiveField('cc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'cc')} placeholder="Cc recipients" className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" autoComplete="off" />
+                      <label className="block text-sm font-bold text-slate-700 mb-2">CC</label>
+                      <input type="text" value={ccField} onChange={(e) => setCcField(e.target.value)} onFocus={() => setActiveField('cc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'cc')} placeholder="Cc recipients" className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none font-medium text-slate-800" autoComplete="off" />
                       {renderSuggestions('cc')}
                     </div>
                     <div className="relative">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">BCC</label>
-                      <input type="text" value={bccField} onChange={(e) => setBccField(e.target.value)} onFocus={() => setActiveField('bcc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'bcc')} placeholder="Bcc recipients" className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" autoComplete="off" />
+                      <label className="block text-sm font-bold text-slate-700 mb-2">BCC</label>
+                      <input type="text" value={bccField} onChange={(e) => setBccField(e.target.value)} onFocus={() => setActiveField('bcc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'bcc')} placeholder="Bcc recipients" className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none font-medium text-slate-800" autoComplete="off" />
                       {renderSuggestions('bcc')}
                     </div>
                   </div>
                 )}
 
-                <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                  <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                <div className="mb-5">
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Subject</label>
+                  <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none font-medium text-slate-800" />
                 </div>
 
-                <div className="mb-4 flex-1">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Message</label>
-                  <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Compose email..." className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none resize-y min-h-[200px]" />
+                <div className="mb-5 flex-1">
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Message</label>
+                  <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Compose email..." className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none resize-y min-h-[200px] font-medium text-slate-800" />
                 </div>
 
-                {/* ... inside the Compose View form ... */}
-
-                {/* ATTACHMENT LIST PREVIEW */}
                 {attachments.length > 0 && (
-                  <div className="mb-4 space-y-2">
+                  <div className="mb-5 space-y-2">
                     {attachments.map((file, index) => (
-                      <div key={index} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg border border-gray-200">
-                        <div className="flex items-center gap-2 overflow-hidden">
-                          <Paperclip className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                      <div key={index} className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border-2 border-slate-200">
+                        <div className="flex items-center gap-3 overflow-hidden">
+                          <Paperclip className="w-4 h-4 text-slate-500 flex-shrink-0" />
                           <div className="truncate">
-                            <p className="text-sm font-medium text-gray-700 truncate">{file.name}</p>
-                            <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+                            <p className="text-sm font-semibold text-slate-700 truncate">{file.name}</p>
+                            <p className="text-xs text-slate-500 font-medium">{formatFileSize(file.size)}</p>
                           </div>
                         </div>
-                        <button onClick={() => removeAttachment(index)} className="p-1 hover:bg-gray-200 rounded-full text-gray-500">
-                          <X className="w-4 h-4" />
-                        </button>
+                        <button onClick={() => removeAttachment(index)} className="p-1.5 hover:bg-red-100 rounded-lg text-slate-500 hover:text-red-600 transition-all"><X className="w-4 h-4" /></button>
                       </div>
                     ))}
                   </div>
                 )}
 
-                {/* BUTTONS ROW */}
                 <div className="flex gap-3 pt-2 items-center">
-                  {/* Hidden File Input */}
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handleFileSelect} 
-                    className="hidden" 
-                    multiple 
-                  />
-
-                  {/* Send Button */}
-                  <button onClick={handleSend} disabled={loading} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-3 px-6 rounded-lg transition-colors inline-flex items-center justify-center gap-2">
+                  <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
+                  <button onClick={handleSend} disabled={loading} className="flex-1 sm:flex-none bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 disabled:from-violet-300 disabled:to-purple-300 text-white font-bold py-3.5 px-8 rounded-xl transition-all duration-200 inline-flex items-center justify-center gap-2 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
                     <Send className="w-4 h-4" /> {loading ? 'Sending...' : 'Send'}
                   </button>
-
-                  {/* Attach Button */}
-                  <button 
-                    onClick={() => fileInputRef.current.click()} 
-                    className="p-3 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
-                    title="Attach file"
-                  >
+                  <button onClick={() => fileInputRef.current.click()} className="p-3.5 text-slate-600 hover:bg-slate-100 rounded-xl transition-all duration-200 border-2 border-slate-200 hover:border-violet-300" title="Attach file">
                     <Paperclip className="w-5 h-5" />
                   </button>
-
-                  {/* Cancel Button */}
-                  <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); clearAttachments(); pushInboxState(); }} className="hidden sm:block bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">
-                    Cancel
-                  </button>
+                  <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); clearAttachments(); pushInboxState(); }} className="hidden sm:block bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3.5 px-8 rounded-xl transition-all duration-200">Cancel</button>
                 </div>
               </div>
             </div>
@@ -1274,30 +1231,24 @@ const GmailComposeApp = () => {
 
       {/* Reply options modal */}
       {showReplyMenu && (
-        <div className="fixed inset-0 z-[70] bg-black bg-opacity-50 flex items-end sm:items-center justify-center p-4">
-          <div className="bg-white w-full max-w-sm rounded-xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-10 fade-in duration-200">
-            <div className="p-4 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
-              <h3 className="font-semibold text-gray-800">Choose Reply Option</h3>
-              <button onClick={() => setShowReplyMenu(false)} className="text-gray-500"><X className="w-5 h-5" /></button>
+        <div className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-10 fade-in duration-200 border border-slate-200">
+            <div className="p-5 bg-gradient-to-r from-violet-50 to-purple-50 border-b border-slate-200 flex justify-between items-center">
+              <h3 className="font-bold text-slate-800">Choose Reply Option</h3>
+              <button onClick={() => setShowReplyMenu(false)} className="text-slate-500 hover:text-slate-800 p-1 hover:bg-slate-200 rounded-lg transition-all"><X className="w-5 h-5" /></button>
             </div>
-            <div className="p-2 space-y-1">
-              <button onClick={handleReplyThread} className="w-full text-left px-4 py-4 hover:bg-gray-50 flex items-center gap-3 rounded-lg group">
-                <div className="bg-blue-100 p-2 rounded-full group-hover:bg-blue-200"><Reply className="w-5 h-5 text-blue-600" /></div>
-                <div>
-                  <div className="font-semibold text-gray-800">Reply to Thread</div>
-                  <div className="text-xs text-gray-500">Keep conversation history</div>
-                </div>
+            <div className="p-3 space-y-2">
+              <button onClick={handleReplyThread} className="w-full text-left px-4 py-4 hover:bg-gradient-to-r hover:from-violet-50 hover:to-purple-50 flex items-center gap-3 rounded-xl group transition-all duration-200 border-2 border-transparent hover:border-violet-200">
+                <div className="bg-violet-100 p-3 rounded-xl group-hover:bg-violet-200 transition-all"><Reply className="w-5 h-5 text-violet-600" /></div>
+                <div><div className="font-bold text-slate-800">Reply to Thread</div><div className="text-xs text-slate-500 font-medium">Keep conversation history</div></div>
               </button>
-              <button onClick={handleReplyNew} className="w-full text-left px-4 py-4 hover:bg-gray-50 flex items-center gap-3 rounded-lg group">
-                <div className="bg-gray-100 p-2 rounded-full group-hover:bg-gray-200"><Mail className="w-5 h-5 text-gray-600" /></div>
-                <div>
-                  <div className="font-semibold text-gray-800">Edit as New Message</div>
-                  <div className="text-xs text-gray-500">Start a separate email</div>
-                </div>
+              <button onClick={handleReplyNew} className="w-full text-left px-4 py-4 hover:bg-gradient-to-r hover:from-slate-50 hover:to-slate-100 flex items-center gap-3 rounded-xl group transition-all duration-200 border-2 border-transparent hover:border-slate-200">
+                <div className="bg-slate-100 p-3 rounded-xl group-hover:bg-slate-200 transition-all"><Mail className="w-5 h-5 text-slate-600" /></div>
+                <div><div className="font-bold text-slate-800">Edit as New Message</div><div className="text-xs text-slate-500 font-medium">Start a separate email</div></div>
               </button>
             </div>
-            <div className="p-2 border-t">
-              <button onClick={() => setShowReplyMenu(false)} className="w-full py-3 text-gray-600 font-medium hover:bg-gray-50 rounded-lg">Cancel</button>
+            <div className="p-3 border-t border-slate-200">
+              <button onClick={() => setShowReplyMenu(false)} className="w-full py-3 text-slate-600 font-bold hover:bg-slate-100 rounded-xl transition-all">Cancel</button>
             </div>
           </div>
         </div>
@@ -1305,29 +1256,34 @@ const GmailComposeApp = () => {
 
       {/* Floating action buttons */}
       {currentView === 'inbox' && (
-        <button onClick={handleCompose} className="fixed right-6 bottom-6 sm:hidden bg-blue-600 text-white p-4 rounded-full shadow-lg z-30">
-          <Mail className="w-6 h-6" />
-        </button>
+        <button onClick={handleCompose} className="fixed right-6 bottom-6 sm:hidden bg-gradient-to-r from-violet-600 to-purple-600 text-white p-5 rounded-full shadow-2xl z-30 transform hover:scale-110 transition-transform duration-200 active:scale-95"><Plus className="w-6 h-6" /></button>
       )}
 
       {currentView === 'message' && !inlineReplyOpen && (
-        <div className="fixed right-6 bottom-6 sm:hidden flex flex-col gap-4 z-30">
-             {/* Mobile summarize button */}
-            <button onClick={handleSummarize} className="bg-indigo-600 text-white p-4 rounded-full shadow-lg">
-                <FileText className="w-6 h-6" />
-            </button>
-            <button onClick={handleReplyClick} className="bg-blue-600 text-white p-4 rounded-full shadow-lg">
-                <Reply className="w-6 h-6" />
-            </button>
+        <div className="fixed right-6 bottom-6 sm:hidden flex flex-col gap-3 z-30">
+          <button onClick={handleSummarize} className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-4 rounded-full shadow-2xl transform hover:scale-110 transition-transform duration-200 active:scale-95"><Sparkles className="w-6 h-6" /></button>
+          <button onClick={handleReplyClick} className="bg-gradient-to-r from-violet-600 to-purple-600 text-white p-4 rounded-full shadow-2xl transform hover:scale-110 transition-transform duration-200 active:scale-95"><Reply className="w-6 h-6" /></button>
         </div>
       )}
 
       {currentView === 'compose' && (
-        <button onClick={handleAudioToggle} className={`fixed right-6 bottom-6 sm:hidden p-4 rounded-full shadow-xl z-[60] ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-indigo-600'} text-white`}>
+        <button 
+          onClick={() => {
+            // For mobile FAB, we might just toggle modes or default to voice if closed
+            if (aiMode === 'text') setAiMode('voice');
+            handleAudioToggle();
+          }}
+          className={`fixed right-6 bottom-6 sm:hidden p-5 rounded-full shadow-2xl z-[60] text-white transform hover:scale-110 transition-all duration-200 active:scale-95 ${
+            isRecording 
+              ? 'bg-gradient-to-r from-red-500 to-red-600 animate-pulse' 
+              : 'bg-gradient-to-r from-indigo-600 to-purple-600'
+          }`}
+        >
           {isRecording ? <Square className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
         </button>
       )}
     </div>
   );
 };
+
 export default GmailComposeApp;
