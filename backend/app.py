@@ -623,22 +623,23 @@ def transcribe_audio():
 
 @app.route('/api/inbox/messages', methods=['GET'])
 def get_inbox_messages():
-    """Fetch recent emails from user's inbox"""
+    """Fetch recent emails from user's inbox or sent folder"""
     try:
-        # Get pagination parameters
+        # Get pagination parameters and Label
         page_token = request.args.get('pageToken')
         max_results = int(request.args.get('maxResults', 20))
+        label_id = request.args.get('label', 'INBOX').upper() # Default to INBOX, allow SENT
         
         service = get_gmail_service_from_session()
         if not service:
             return jsonify({'error': 'Not authenticated'}), 401
 
-        # Fetch messages list
+        # Fetch messages list based on Label
         results = service.users().messages().list(
             userId='me',
             maxResults=max_results,
             pageToken=page_token,
-            labelIds=['INBOX']
+            labelIds=[label_id]
         ).execute()
 
         messages = results.get('messages', [])
@@ -658,22 +659,18 @@ def get_inbox_messages():
                 headers = message['payload'].get('headers', [])
                 subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
                 from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
+                to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), 'Unknown') # Added TO field
                 date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
                 
-                # Extract body
+                # Extract body (Simplified logic for preview)
                 body = ''
                 if 'parts' in message['payload']:
                     for part in message['payload']['parts']:
-                        if part['mimeType'] == 'text/plain':
-                            if 'data' in part['body']:
-                                body = base64.urlsafe_b64decode(
-                                    part['body']['data']
-                                ).decode('utf-8', errors='ignore')
-                                break
+                        if part['mimeType'] == 'text/plain' and 'body' in part and 'data' in part['body']:
+                            body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                            break
                 elif 'body' in message['payload'] and 'data' in message['payload']['body']:
-                    body = base64.urlsafe_b64decode(
-                        message['payload']['body']['data']
-                    ).decode('utf-8', errors='ignore')
+                    body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8', errors='ignore')
 
                 # Check if unread
                 is_unread = 'UNREAD' in message.get('labelIds', [])
@@ -683,9 +680,10 @@ def get_inbox_messages():
                     'threadId': message['threadId'],
                     'subject': subject,
                     'from': from_email,
+                    'to': to_email, # Return TO field
                     'date': date,
                     'snippet': message.get('snippet', ''),
-                    'body': body[:500],  # Preview only
+                    'body': body[:500],
                     'isUnread': is_unread
                 })
 
