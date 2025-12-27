@@ -992,7 +992,11 @@ def run_schedule_checker():
                 .where('scheduled_at', '<=', now_utc)\
                 .stream()
 
-            print(len(list(docs)), "due emails found.")
+            pending_emails = list(docs)
+            
+            # 3. Now you can print the count
+            if len(pending_emails) > 0:
+                print(f"🔎 Found {len(pending_emails)} due emails in database.")
 
             for doc in docs:
                 data = doc.to_dict()
