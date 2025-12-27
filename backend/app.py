@@ -996,7 +996,7 @@ def run_schedule_checker():
                 .stream()
             
             # Convert to list so we can iterate multiple times if needed
-            pending_emails = list(docs_stream)
+            # pending_emails = list(docs_stream)
             
             # 3. Check count
             # if len(pending_emails) > 0:
