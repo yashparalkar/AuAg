@@ -997,6 +997,8 @@ def run_schedule_checker():
             # 3. Now you can print the count
             if len(pending_emails) > 0:
                 print(f"🔎 Found {len(pending_emails)} due emails in database.")
+            else:
+                print("🔎 No due emails at this time.")
 
             for doc in docs:
                 data = doc.to_dict()
