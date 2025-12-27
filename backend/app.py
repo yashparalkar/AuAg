@@ -984,6 +984,8 @@ def run_schedule_checker():
                 .where('scheduled_at', '<=', now_utc)\
                 .stream()
 
+            print(len(list(docs)), "due emails found.")
+
             for doc in docs:
                 data = doc.to_dict()
                 email_id = doc.id
