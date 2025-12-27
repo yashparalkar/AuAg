@@ -481,7 +481,11 @@ const GmailComposeApp = () => {
       formData.append('messageId', selectedMessage.id);
       attachments.forEach((file) => formData.append('attachments', file));
 
-      const response = await fetch(`${API_BASE}/email/send`, { method: 'POST', credentials: 'include', body: formData });
+      const response = await fetch(`${API_BASE}/email/send`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+      });
       const data = await response.json();
       if (data.success) { setStatus('Reply sent!'); setReplyBody(''); setAttachments([]); setInlineReplyOpen(false); }
       else { setStatus('Failed: ' + (data.error || 'unknown')); }

@@ -2,6 +2,7 @@
 from flask import Flask, jsonify, request, session, redirect, send_from_directory
 from flask_cors import CORS
 from gmail_oauth import GmailOAuthManager
+from google.auth.transport.requests import Request
 from email_summarizer import EmailSummarizer
 import secrets
 from email_agent_service import generate_email_from_description
@@ -50,7 +51,7 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 scheduler.start()
 
 # BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -406,30 +407,34 @@ def get_email_by_relation(user_email, relation):
 def send_scheduled_draft_task(credentials_dict, draft_id):
     """Background task to send a scheduled draft"""
     try:
-        # Reconstruct credentials from dict
+        # Recreate credentials
         creds = Credentials(
-            token=credentials_dict['token'],
+            token=credentials_dict.get('token'),
             refresh_token=credentials_dict.get('refresh_token'),
             token_uri=credentials_dict.get('token_uri'),
             client_id=credentials_dict.get('client_id'),
             client_secret=credentials_dict.get('client_secret'),
             scopes=credentials_dict.get('scopes')
         )
-        
-        # Build service
+
+        # Refresh if needed
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+
+        # Build Gmail service and send draft
         service = build('gmail', 'v1', credentials=creds)
-        
-        # Send the draft
         sent_message = service.users().drafts().send(
             userId='me',
             body={'id': draft_id}
         ).execute()
-        
-        print(f"✅ Scheduled email sent successfully: {sent_message['id']}")
+
+        print(f"✅ Scheduled email sent successfully: {sent_message.get('id')}")
         return True
-        
+
     except Exception as e:
+        # If this job needs Flask app context (DB access etc), wrap with app.app_context()
         print(f"❌ Error sending scheduled email: {e}")
+        import traceback; traceback.print_exc()
         return False
 
 @app.route('/api/email/send', methods=['POST'])
@@ -916,6 +921,7 @@ def download_attachment():
     except Exception as e:
         print(f"Attachment error: {e}")
         return jsonify({'error': str(e)}), 500
+
     
 
 if __name__ == "__main__":
