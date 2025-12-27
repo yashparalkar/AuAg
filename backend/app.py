@@ -984,31 +984,36 @@ def run_schedule_checker():
     
     while True:
         try:
-            # 1. Get current time in UTC
             now_utc = datetime.now(pytz.utc)
             print(f"\n{'='*60}")
             print(f"🔍 Checking for due emails at {now_utc}")
             
-            # 2. Query Firestore - DON'T consume the iterator yet
+            # Query only by status (doesn't require composite index)
             docs_stream = get_db().collection('scheduled_emails')\
                 .where('status', '==', 'pending')\
-                .where('scheduled_at', '<=', now_utc)\
                 .stream()
             
-            # Convert to list so we can iterate multiple times if needed
-            pending_emails = list(docs_stream)
+            # Filter by time in Python instead of Firestore
+            pending_emails = []
+            for doc in docs_stream:
+                data = doc.to_dict()
+                scheduled_at = data.get('scheduled_at')
+                
+                # Check if due
+                if scheduled_at and scheduled_at <= now_utc:
+                    pending_emails.append(doc)
             
-            # 3. Check count
-            # if len(pending_emails) > 0:
-            #     print(f"🔎 Found {len(pending_emails)} due email(s) in database!")
-            # else:
-            #     print(f"✓ No due emails at this time")
-            #     print(f"{'='*60}\n")
-            #     time.sleep(60)
-            #     continue
+            # Check count
+            if len(pending_emails) > 0:
+                print(f"🔎 Found {len(pending_emails)} due email(s) in database!")
+            else:
+                print(f"✓ No due emails at this time")
+                print(f"{'='*60}\n")
+                time.sleep(60)
+                continue
             
-            # 4. Process each email
-            for doc in pending_emails:  # ← Now iterate over the list, not the stream
+            # Process each email
+            for doc in pending_emails:
                 data = doc.to_dict()
                 email_id = doc.id
                 
