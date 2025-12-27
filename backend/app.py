@@ -25,7 +25,9 @@ from email import encoders
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from dateutil import parser
-import datetime
+import pickle
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 from flask import send_file
 import io
@@ -48,7 +50,6 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-# Initialize Scheduler
 scheduler = BackgroundScheduler()
 scheduler.start()
 
@@ -402,10 +403,40 @@ def get_email_by_relation(user_email, relation):
         return []
 
 
+def send_scheduled_draft_task(credentials_dict, draft_id):
+    """Background task to send a scheduled draft"""
+    try:
+        # Reconstruct credentials from dict
+        creds = Credentials(
+            token=credentials_dict['token'],
+            refresh_token=credentials_dict.get('refresh_token'),
+            token_uri=credentials_dict.get('token_uri'),
+            client_id=credentials_dict.get('client_id'),
+            client_secret=credentials_dict.get('client_secret'),
+            scopes=credentials_dict.get('scopes')
+        )
+        
+        # Build service
+        service = build('gmail', 'v1', credentials=creds)
+        
+        # Send the draft
+        sent_message = service.users().drafts().send(
+            userId='me',
+            body={'id': draft_id}
+        ).execute()
+        
+        print(f"✅ Scheduled email sent successfully: {sent_message['id']}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error sending scheduled email: {e}")
+        return False
+
 @app.route('/api/email/send', methods=['POST'])
 def send_email():
     try:
-        if not get_gmail_service_from_session():
+        service = get_gmail_service_from_session()
+        if not service:
             return jsonify({'success': False, 'error': 'Auth required'}), 401
 
         # Form Data
@@ -414,10 +445,9 @@ def send_email():
         body_text = request.form.get('body')
         thread_id = request.form.get('threadId')
         reply_to_id = request.form.get('messageId')
-        scheduled_time_str = request.form.get('scheduledTime') # <--- NEW PARAMETER
+        scheduled_time_str = request.form.get('scheduledTime')
         
         uploaded_files = request.files.getlist('attachments')
-        service = get_gmail_service_from_session()
         
         # Build Message
         message = MIMEMultipart()
@@ -441,7 +471,12 @@ def send_email():
         # Threading Headers
         if reply_to_id:
             try:
-                original_msg = service.users().messages().get(userId='me', id=reply_to_id, format='metadata', metadataHeaders=['Message-ID', 'References']).execute()
+                original_msg = service.users().messages().get(
+                    userId='me', 
+                    id=reply_to_id, 
+                    format='metadata', 
+                    metadataHeaders=['Message-ID', 'References']
+                ).execute()
                 headers = original_msg.get('payload', {}).get('headers', [])
                 rfc_message_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), None)
                 if rfc_message_id:
@@ -456,12 +491,10 @@ def send_email():
         # --- SCHEDULING LOGIC ---
         if scheduled_time_str:
             try:
-                # 1. Create a Draft (instead of sending immediately)
+                # 1. Create a Draft
                 draft_body = {'message': body_payload}
                 if thread_id:
-                    # Note: Drafts.create doesn't support threadId directly in the same way, 
-                    # but usually, it respects the headers in the raw message.
-                    pass 
+                    body_payload['threadId'] = thread_id
 
                 draft = service.users().drafts().create(userId='me', body=draft_body).execute()
                 draft_id = draft['id']
@@ -469,19 +502,41 @@ def send_email():
                 # 2. Parse Time
                 run_date = parser.parse(scheduled_time_str)
                 
-                # 3. Add to Scheduler (Pass credentials explicitly as session won't exist in background)
-                scheduler.add_job(
+                # 3. Get credentials as dictionary (not from session)
+                # You need to store credentials in a way accessible to background tasks
+                creds = service._http.credentials
+                credentials_dict = {
+                    'token': creds.token,
+                    'refresh_token': creds.refresh_token,
+                    'token_uri': creds.token_uri,
+                    'client_id': creds.client_id,
+                    'client_secret': creds.client_secret,
+                    'scopes': creds.scopes
+                }
+                
+                # 4. Add to Scheduler
+                job = scheduler.add_job(
                     send_scheduled_draft_task, 
                     'date', 
                     run_date=run_date, 
-                    args=[session['google_creds'], draft_id]
+                    args=[credentials_dict, draft_id],
+                    id=f"email_{draft_id}"  # Unique job ID
                 )
                 
-                return jsonify({'success': True, 'scheduled': True, 'time': scheduled_time_str})
+                print(f"📅 Email scheduled for {run_date} (Job ID: {job.id})")
+                
+                return jsonify({
+                    'success': True, 
+                    'scheduled': True, 
+                    'time': scheduled_time_str,
+                    'draft_id': draft_id
+                })
                 
             except Exception as e:
-                print(f"Scheduling Error: {e}")
-                return jsonify({'success': False, 'error': f"Failed to schedule: {str(e)}"})
+                print(f"❌ Scheduling Error: {e}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': f"Failed to schedule: {str(e)}"}), 500
 
         # --- IMMEDIATE SEND LOGIC ---
         if thread_id:
@@ -489,7 +544,7 @@ def send_email():
 
         sent_message = service.users().messages().send(userId='me', body=body_payload).execute()
         
-        # Save Relationship (Same as before)
+        # Save Relationship
         try:
             user_email = get_current_user_email()
             mediator = get_mediator()
@@ -497,14 +552,16 @@ def send_email():
             if user_email and recipient_relation:
                 clean_email = to_email.split('<')[1].split('>')[0].strip() if '<' in to_email else to_email
                 save_email_relationship(user_email, clean_email, recipient_relation)
-        except: pass
+        except: 
+            pass
         
         return jsonify({'success': True, 'id': sent_message['id']})
 
     except Exception as e:
-        print(f"Send error: {e}")
+        print(f"❌ Send error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 def get_mediator():
     session_id = session.get('session_id')
@@ -860,29 +917,6 @@ def download_attachment():
         print(f"Attachment error: {e}")
         return jsonify({'error': str(e)}), 500
     
-
-def send_scheduled_draft_task(creds_dict, draft_id):
-    """Background task to send a saved draft"""
-    print(f"Executing scheduled send for Draft ID: {draft_id}")
-    try:
-        # Rebuild credentials since we are in a background thread without session
-        creds = Credentials(
-            token=creds_dict['token'],
-            refresh_token=creds_dict.get('refresh_token'),
-            token_uri=creds_dict['token_uri'],
-            client_id=creds_dict['client_id'],
-            client_secret=creds_dict['client_secret'],
-            scopes=creds_dict['scopes']
-        )
-        service = build('gmail', 'v1', credentials=creds)
-        
-        # Send the draft
-        service.users().drafts().send(userId='me', body={'id': draft_id}).execute()
-        print(f"Successfully sent scheduled draft: {draft_id}")
-        
-    except Exception as e:
-        print(f"Failed to send scheduled draft {draft_id}: {e}")
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", debug=True, port=5001)
