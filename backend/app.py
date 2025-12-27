@@ -27,6 +27,8 @@ from email import encoders
 from apscheduler.schedulers.background import BackgroundScheduler
 from dateutil import parser
 import pickle
+import pytz
+
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -51,7 +53,7 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+scheduler = BackgroundScheduler(timezone=pytz.utc)
 scheduler.start()
 
 # BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -506,6 +508,12 @@ def send_email():
                 
                 # 2. Parse Time
                 run_date = parser.parse(scheduled_time_str)
+        
+                # Ensure it's timezone-aware in UTC
+                if run_date.tzinfo is None:
+                    run_date = pytz.UTC.localize(run_date)
+                else:
+                    run_date = run_date.astimezone(pytz.UTC)
                 
                 # 3. Get credentials as dictionary (not from session)
                 # You need to store credentials in a way accessible to background tasks
