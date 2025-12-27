@@ -26,7 +26,9 @@ from email import encoders
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from dateutil import parser
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
+import threading
 import pytz
 
 from google.oauth2.credentials import Credentials
@@ -456,24 +458,23 @@ def send_email():
         if not service:
             return jsonify({'success': False, 'error': 'Auth required'}), 401
 
-        # Form Data
+        # 1. Extract Form Data
         to_email = request.form.get('to')
         subject = request.form.get('subject')
         body_text = request.form.get('body')
         thread_id = request.form.get('threadId')
         reply_to_id = request.form.get('messageId')
-        scheduled_time_str = request.form.get('scheduledTime')
+        scheduled_time_str = request.form.get('scheduledTime') # Check if this exists
         
         uploaded_files = request.files.getlist('attachments')
         
-        # Build Message
+        # 2. Build the Email Message (Common for both Scheduled and Immediate)
         message = MIMEMultipart()
         message['to'] = to_email
         message['from'] = 'me'
         message['subject'] = subject
         message.attach(MIMEText(body_text, 'html'))
 
-        # Attachments
         if uploaded_files:
             for file in uploaded_files:
                 try:
@@ -502,33 +503,31 @@ def send_email():
             except Exception as e:
                 print(f"Threading error: {e}")
         
+        # Encode message
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
         body_payload = {'raw': raw_message}
-        
-        # --- SCHEDULING LOGIC ---
+
+        # ==========================================
+        # PATH A: SCHEDULED SEND (Save to DB)
+        # ==========================================
         if scheduled_time_str:
             try:
-                # 1. Create a Draft
+                # A1. Create Draft in Gmail (so we have a valid message ID/Draft ID)
                 draft_body = {'message': body_payload}
-                if thread_id:
-                    body_payload['threadId'] = thread_id
-
+                # For drafts, we usually don't need threadId in the body, headers handle it
                 draft = service.users().drafts().create(userId='me', body=draft_body).execute()
                 draft_id = draft['id']
-                
-                # 2. Parse Time
+
+                # A2. Parse Time
                 run_date = parser.parse(scheduled_time_str)
-        
-                # Ensure it's timezone-aware in UTC
                 if run_date.tzinfo is None:
                     run_date = pytz.UTC.localize(run_date)
                 else:
                     run_date = run_date.astimezone(pytz.UTC)
-                
-                # 3. Get credentials as dictionary (not from session)
-                # You need to store credentials in a way accessible to background tasks
+
+                # A3. Save Credentials for Background Worker
                 creds = service._http.credentials
-                credentials_dict = {
+                creds_data = {
                     'token': creds.token,
                     'refresh_token': creds.refresh_token,
                     'token_uri': creds.token_uri,
@@ -536,32 +535,41 @@ def send_email():
                     'client_secret': creds.client_secret,
                     'scopes': creds.scopes
                 }
+
+                # A4. Save to Firestore
+                doc_ref = db.collection('scheduled_emails').document()
+                doc_ref.set({
+                    'draft_id': draft_id,
+                    'user_email': get_current_user_email(), 
+                    'recipient': to_email,
+                    'subject': subject,
+                    'scheduled_at': run_date,
+                    'status': 'pending',
+                    'credentials': creds_data,
+                    'created_at': datetime.now(pytz.utc)
+                })
                 
-                # 4. Add to Scheduler
-                job = scheduler.add_job(
-                    send_scheduled_draft_task, 
-                    'date', 
-                    run_date=run_date, 
-                    args=[credentials_dict, draft_id],
-                    id=f"email_{draft_id}"  # Unique job ID
-                )
-                
-                print(f"📅 Email scheduled for {run_date} (Job ID: {job.id})")
-                
+                print(f"✅ Scheduled email saved to DB: {doc_ref.id}")
+
+                # Return early - DO NOT run immediate logic
                 return jsonify({
                     'success': True, 
                     'scheduled': True, 
                     'time': scheduled_time_str,
-                    'draft_id': draft_id
+                    'db_id': doc_ref.id
                 })
-                
+
             except Exception as e:
                 print(f"❌ Scheduling Error: {e}")
                 import traceback
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': f"Failed to schedule: {str(e)}"}), 500
 
-        # --- IMMEDIATE SEND LOGIC ---
+        # ==========================================
+        # PATH B: IMMEDIATE SEND (Your snippet)
+        # ==========================================
+        # This only runs if scheduled_time_str was empty
+        
         if thread_id:
             body_payload['threadId'] = thread_id
 
@@ -585,6 +593,7 @@ def send_email():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+    
 
 def get_mediator():
     session_id = session.get('session_id')
@@ -957,6 +966,78 @@ def scheduler_status():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     
+
+def run_schedule_checker():
+    """Continuously checks Firestore for due emails"""
+    print("🔄 Scheduler Worker Started")
+    
+    while True:
+        try:
+            # 1. Get current time in UTC
+            now_utc = datetime.now(pytz.utc)
+            
+            # 2. Query Firestore for pending emails that are due
+            # Note: Firestore queries require a composite index for complex queries. 
+            # If this errors, click the link in the terminal to create the index.
+            docs = db.collection('scheduled_emails')\
+                .where('status', '==', 'pending')\
+                .where('scheduled_at', '<=', now_utc)\
+                .stream()
+
+            for doc in docs:
+                data = doc.to_dict()
+                email_id = doc.id
+                print(f"🚀 Found due email: {email_id}")
+
+                try:
+                    # 3. Reconstruct Credentials
+                    # We stored them inside the document for easy access
+                    creds_data = data.get('credentials')
+                    creds = Credentials(
+                        token=creds_data['token'],
+                        refresh_token=creds_data.get('refresh_token'),
+                        token_uri=creds_data['token_uri'],
+                        client_id=creds_data['client_id'],
+                        client_secret=creds_data['client_secret'],
+                        scopes=creds_data['scopes']
+                    )
+
+                    # 4. Send the Draft
+                    service = build('gmail', 'v1', credentials=creds)
+                    draft_id = data.get('draft_id')
+                    
+                    sent_msg = service.users().drafts().send(
+                        userId='me', 
+                        body={'id': draft_id}
+                    ).execute()
+
+                    # 5. Update Status to 'sent'
+                    db.collection('scheduled_emails').document(email_id).update({
+                        'status': 'sent',
+                        'sent_at': datetime.now(pytz.utc),
+                        'message_id': sent_msg['id']
+                    })
+                    print(f"✅ Email {email_id} sent successfully!")
+
+                except Exception as e:
+                    print(f"❌ Failed to send {email_id}: {e}")
+                    # Mark as failed so we don't retry forever
+                    db.collection('scheduled_emails').document(email_id).update({
+                        'status': 'failed',
+                        'error': str(e)
+                    })
+
+            # Sleep for 60 seconds before checking again
+            time.sleep(60)
+
+        except Exception as e:
+            print(f"⚠️ Scheduler Loop Error: {e}")
+            time.sleep(60) # Sleep even on error to prevent CPU spike
+
+# Start the background thread
+# Daemon=True ensures the thread dies when the main app stops
+scheduler_thread = threading.Thread(target=run_schedule_checker, daemon=True)
+scheduler_thread.start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", debug=True, port=5001)
