@@ -999,13 +999,13 @@ def run_schedule_checker():
             pending_emails = list(docs_stream)
             
             # 3. Check count
-            if len(pending_emails) > 0:
-                print(f"🔎 Found {len(pending_emails)} due email(s) in database!")
-            else:
-                print(f"✓ No due emails at this time")
-                print(f"{'='*60}\n")
-                time.sleep(60)
-                continue
+            # if len(pending_emails) > 0:
+            #     print(f"🔎 Found {len(pending_emails)} due email(s) in database!")
+            # else:
+            #     print(f"✓ No due emails at this time")
+            #     print(f"{'='*60}\n")
+            #     time.sleep(60)
+            #     continue
             
             # 4. Process each email
             for doc in pending_emails:  # ← Now iterate over the list, not the stream
