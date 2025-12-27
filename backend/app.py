@@ -922,6 +922,22 @@ def download_attachment():
         print(f"Attachment error: {e}")
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/scheduler/status', methods=['GET'])
+def scheduler_status():
+    try:
+        jobs = scheduler.get_jobs()
+        return jsonify({
+            'running': scheduler.running,
+            'jobs_count': len(jobs),
+            'jobs': [{
+                'id': job.id,
+                'next_run': str(job.next_run_time),
+                'func': job.func.__name__
+            } for job in jobs]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
     
 
 if __name__ == "__main__":
