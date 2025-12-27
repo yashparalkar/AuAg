@@ -591,6 +591,7 @@ def advance_mediator():
             print(f"Error fetching user name: {e}")
     
     state = mediator.advance(user_input + f" sender_name: {name}")   # <-- Pass sender's name to mediator, fetched from the DB
+    print(f"[MEDIATOR ADVANCE] Input='{user_input}' | New State={state}")
     
     return jsonify({
         'success': True,
