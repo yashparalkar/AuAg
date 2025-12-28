@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar, Menu, LogOut, OctagonAlert } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -10,8 +10,12 @@ const GmailComposeApp = () => {
   // Auth & user
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userEmail, setUserEmail] = useState('');
+  const [userAvatar, setUserAvatar] = useState('');
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Layout State
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Compose fields
   const [toField, setToField] = useState('');
@@ -28,11 +32,10 @@ const GmailComposeApp = () => {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
 
-  // Views: 'inbox' | 'compose' | 'message'
+  // Views: 'inbox' | 'sent' | 'scheduled' | 'spam' | 'compose' | 'message'
   const [currentView, setCurrentView] = useState('inbox');
   const [showCompose, setShowCompose] = useState(false);
   
-
   // Inbox / messages
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
@@ -75,7 +78,6 @@ const GmailComposeApp = () => {
   const fileInputRef = useRef(null);
 
   // Schedulers
-  // Add this near your other state variables
   const [scheduleTime, setScheduleTime] = useState('');
   const [showScheduleInput, setShowScheduleInput] = useState(false);
 
@@ -99,7 +101,6 @@ const GmailComposeApp = () => {
 
   const getAvatarData = (name) => {
     const cleanName = name || '?';
-    // Use character code to pick a consistent color for the same name
     const charCode = cleanName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const colorClass = avatarColors[charCode % avatarColors.length];
     const initial = cleanName.charAt(0).toUpperCase();
@@ -172,28 +173,15 @@ const GmailComposeApp = () => {
   /* -------------------------
      API & load functions
      ------------------------- */
-  const checkAuthStatus = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/auth/status`, { credentials: 'include' });
-      const data = await response.json();
-      setIsAuthenticated(Boolean(data.authenticated));
-      if (data.email) setUserEmail(data.email);
-      if (data.authenticated) window.history.replaceState({ view: 'inbox' }, '', window.location.pathname + '#inbox');
-    } catch (error) {
-      console.error('Auth check failed:', error);
-    }
-  }, []);
-
-  // Replace your existing loadInbox function with this:
   const loadInbox = useCallback(async (pageToken = null, label = 'INBOX') => {
     setLoadingMessages(true);
     try {
       let url;
-      // Check if we are loading scheduled messages
+      // Handle different views
       if (label === 'SCHEDULED') {
         url = `${API_BASE}/scheduled/messages`;
       } else {
-        // Standard Gmail API
+        // Standard Gmail API (INBOX, SENT, SPAM)
         url = pageToken 
           ? `${API_BASE}/inbox/messages?pageToken=${pageToken}&label=${label}` 
           : `${API_BASE}/inbox/messages?label=${label}`;
@@ -212,6 +200,26 @@ const GmailComposeApp = () => {
       setLoadingMessages(false);
     }
   }, []);
+
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/status`, { credentials: 'include' });
+      const data = await response.json();
+      setIsAuthenticated(Boolean(data.authenticated));
+      if (data.email) setUserEmail(data.email);
+      if (data.picture) setUserAvatar(data.picture);
+      if (data.authenticated) {
+        // Handle hash navigation on load
+        const hash = window.location.hash;
+        if (hash === '#sent') { setCurrentView('sent'); loadInbox(null, 'SENT'); }
+        else if (hash === '#scheduled') { setCurrentView('scheduled'); loadInbox(null, 'SCHEDULED'); }
+        else if (hash === '#spam') { setCurrentView('spam'); loadInbox(null, 'SPAM'); }
+        else { setCurrentView('inbox'); loadInbox(null, 'INBOX'); }
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error);
+    }
+  }, [loadInbox]);
 
   const loadMessageDetail = useCallback(async (messageId, pushHistory = true) => {
     setSummary(''); 
@@ -245,19 +253,6 @@ const GmailComposeApp = () => {
     setAttachments(prev => prev.filter((_, index) => index !== indexToRemove));
   };
 
-  const formatFileSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const clearAttachments = () => {
-    setAttachments([]);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
   const extractAttachments = (payload) => {
     if (!payload) return [];
     let attachments = [];
@@ -278,13 +273,19 @@ const GmailComposeApp = () => {
      Effects
      ------------------------- */
   useEffect(() => { checkAuthStatus(); }, [checkAuthStatus]);
-  useEffect(() => { 
-    if (isAuthenticated) {
-      if (currentView === 'inbox') loadInbox(null, 'INBOX');
-      else if (currentView === 'sent') loadInbox(null, 'SENT');
-      else if (currentView === 'scheduled') loadInbox(null, 'SCHEDULED'); // <--- ADD THIS
-    }
-  }, [isAuthenticated, currentView, loadInbox]);
+  
+  // Navigation changes
+  const handleNavigation = (view) => {
+    setCurrentView(view);
+    setShowCompose(false);
+    setSelectedMessage(null);
+    setIsMobileMenuOpen(false); // Close mobile menu
+    pushInboxState(false, view);
+    if (view === 'inbox') loadInbox(null, 'INBOX');
+    else if (view === 'sent') loadInbox(null, 'SENT');
+    else if (view === 'scheduled') loadInbox(null, 'SCHEDULED');
+    else if (view === 'spam') loadInbox(null, 'SPAM');
+  };
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -361,29 +362,25 @@ const GmailComposeApp = () => {
       const hash = window.location.hash;
       
       if (!state) {
-        if (hash === '#sent') {
-          setCurrentView('sent'); setShowCompose(false); setSelectedMessage(null);
-        } else if (hash.startsWith('#message-')) {
-          // ... existing message logic
-        } else if (hash === '#compose') {
-          // ... existing compose logic
-        } else {
-          setCurrentView('inbox'); setShowCompose(false); setSelectedMessage(null);
-        }
+        if (hash === '#sent') { handleNavigation('sent'); }
+        else if (hash === '#scheduled') { handleNavigation('scheduled'); }
+        else if (hash === '#spam') { handleNavigation('spam'); }
+        else if (hash === '#compose') { setShowCompose(true); setCurrentView('compose'); }
+        else { handleNavigation('inbox'); }
         return;
       }
       
-      // Update state checks
-      if (state.view === 'inbox') {
-        setCurrentView('inbox'); setShowCompose(false); setSelectedMessage(null);
-      } else if (state.view === 'sent') {
-        setCurrentView('sent'); setShowCompose(false); setSelectedMessage(null);
+      if (state.view === 'inbox' || state.view === 'sent' || state.view === 'scheduled' || state.view === 'spam') {
+        setCurrentView(state.view); setShowCompose(false); setSelectedMessage(null);
+        if (state.view === 'inbox') loadInbox(null, 'INBOX');
+        else if (state.view === 'sent') loadInbox(null, 'SENT');
+        else if (state.view === 'scheduled') loadInbox(null, 'SCHEDULED');
+        else if (state.view === 'spam') loadInbox(null, 'SPAM');
       } 
-      // ... rest of existing logic
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [messages, loadMessageDetail]);
+  }, [loadInbox]);
 
   /* -------------------------
      Contact suggestions
@@ -457,6 +454,7 @@ const GmailComposeApp = () => {
     setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody('');
     setAiInstruction(''); setAiMode('voice');
     setShowMobileAiMenu(false); setShowMobileTextInput(false);
+    setIsMobileMenuOpen(false); // Close sidebar if open
     window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose');
   };
 
@@ -508,7 +506,6 @@ const GmailComposeApp = () => {
     }
 
     setLoading(true);
-    // Change status text based on whether it is scheduled
     setStatus(scheduleTime ? 'Scheduling email...' : 'Sending email...');
 
     try {
@@ -520,12 +517,9 @@ const GmailComposeApp = () => {
       if (bccField) formData.append('bcc', bccField);
       attachments.forEach((file) => formData.append('attachments', file));
 
-      // --- ADD THIS ---
       if (scheduleTime) {
-        // Send ISO string to backend
         formData.append('scheduledTime', new Date(scheduleTime).toISOString());
       }
-      // ----------------
 
       const response = await fetch(`${API_BASE}/email/send`, {
         method: 'POST',
@@ -536,17 +530,12 @@ const GmailComposeApp = () => {
       const data = await response.json();
       
       if (data.success) {
-        // Updated success message
         setStatus(data.scheduled ? 'Email successfully scheduled!' : 'Email sent successfully!');
-        
-        // Reset fields
         setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); setAttachments([]);
-        setScheduleTime(''); setShowScheduleInput(false); // Reset schedule state
-        
+        setScheduleTime(''); setShowScheduleInput(false);
         if (fileInputRef.current) fileInputRef.current.value = "";
         setShowCompose(false);
-        setCurrentView('inbox');
-        pushInboxState();
+        handleNavigation('inbox');
       } else {
         setStatus('Failed: ' + (data.error || 'unknown'));
       }
@@ -613,7 +602,7 @@ const GmailComposeApp = () => {
   };
 
   /* -------------------------
-     Render
+     Render Components
      ------------------------- */
   const renderSuggestions = (fieldType) => {
     if (activeField !== fieldType || suggestions.length === 0) return null;
@@ -643,316 +632,426 @@ const GmailComposeApp = () => {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
-      <header className="bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 sm:px-6 py-4 sticky top-0 z-20 shadow-sm">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+    <div className="flex h-screen bg-slate-50 overflow-hidden relative">
+      
+      {/* --- MOBILE OVERLAY BACKDROP --- */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-40 md:hidden animate-in fade-in duration-200" 
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* --- SIDEBAR (Desktop: Static, Mobile: Drawer) --- */}
+      <aside className={`
+          fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 ease-in-out flex flex-col h-full
+          md:translate-x-0 md:static
+          ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
+      `}>
+        {/* Logo Area */}
+        <div className="p-6 flex items-center justify-between border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl shadow-md"><Mail className="w-6 h-6 text-white" /></div>
+            <div className="p-2 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl shadow-md">
+              <Mail className="w-5 h-5 text-white" />
+            </div>
             <h1 className="text-xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent">Echo Mail</h1>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 px-3 py-2 bg-slate-100 rounded-lg"><User className="w-4 h-4 text-slate-600" /><span className="text-sm font-medium text-slate-700 truncate max-w-[150px]">{userEmail}</span></div>
-            <button onClick={handleLogout} className="text-sm font-medium text-slate-600 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg transition-all">Logout</button>
-          </div>
+          {/* Mobile Close Button */}
+          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden p-1 text-slate-400 hover:bg-slate-100 rounded-lg">
+             <X className="w-5 h-5" />
+          </button>
         </div>
-      </header>
 
-      <main className="flex-1 w-full max-w-6xl mx-auto p-4 sm:p-6 pb-24 sm:pb-6">
+        {/* Compose Button */}
+        <div className="p-4">
+          <button 
+            onClick={handleCompose} 
+            className="w-full bg-violet-50 hover:bg-violet-100 text-violet-700 font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-colors border border-violet-100 shadow-sm"
+          >
+            <Plus className="w-5 h-5" />
+            <span>Compose</span>
+          </button>
+        </div>
+
+        {/* Navigation Links */}
+        <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
+          <button 
+            onClick={() => handleNavigation('inbox')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'inbox' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+          >
+            <Inbox className="w-5 h-5" /> Inbox
+          </button>
+          <button 
+            onClick={() => handleNavigation('sent')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'sent' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+          >
+            <Send className="w-5 h-5" /> Sent
+          </button>
+          <button 
+            onClick={() => handleNavigation('scheduled')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'scheduled' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+          >
+            <Clock className="w-5 h-5" /> Scheduled
+          </button>
+          {/* --- NEW SPAM TAB --- */}
+          <button 
+            onClick={() => handleNavigation('spam')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'spam' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+          >
+            <OctagonAlert className="w-5 h-5" /> Spam
+          </button>
+        </nav>
+
+        {/* User Profile */}
+        <div className="p-4 border-t border-slate-200">
+           <div className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-50 cursor-pointer group relative">
+              <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden">
+                {userAvatar ? <img src={userAvatar} alt="User" className="w-full h-full object-cover"/> : <User className="w-5 h-5 text-slate-500" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-slate-800 truncate">{userEmail}</p>
+                <div onClick={handleLogout} className="flex items-center gap-1 text-xs text-red-500 font-medium hover:underline mt-0.5">
+                   <LogOut className="w-3 h-3" /> Logout
+                </div>
+              </div>
+           </div>
+        </div>
+      </aside>
+
+      {/* --- MAIN CONTENT AREA --- */}
+      <main className="flex-1 flex flex-col h-full w-full relative">
+        
+        {/* Mobile Header (Hamburger Menu) */}
+        <header className="md:hidden bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 py-3 sticky top-0 z-20 flex items-center gap-4">
+          <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600">
+             <Menu className="w-6 h-6" />
+          </button>
+          <div className="flex items-center gap-2">
+             <div className="p-1.5 bg-gradient-to-br from-violet-500 to-purple-600 rounded-lg"><Mail className="w-4 h-4 text-white" /></div>
+             <span className="font-bold text-slate-800">Echo Mail</span>
+          </div>
+        </header>
+
+        {/* Status Notification */}
         {status && (
-          <div className="mb-4 p-4 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 text-emerald-700 rounded-xl flex items-center gap-3 text-sm sm:text-base shadow-sm">
-            <div className="p-1 bg-emerald-500 rounded-full"><Check className="w-4 h-4 text-white flex-shrink-0" /></div><span className="font-medium">{status}</span>
+          <div className="absolute top-16 md:top-4 left-1/2 transform -translate-x-1/2 z-50 animate-in slide-in-from-top-4 fade-in duration-300">
+            <div className="px-4 py-2 bg-slate-800 text-white rounded-full shadow-xl flex items-center gap-2 text-sm font-medium">
+              <Check className="w-4 h-4 text-emerald-400" />
+              {status}
+            </div>
           </div>
         )}
 
-        {/* INBOX, SENT & SCHEDULED VIEW */}
-        {(currentView === 'inbox' || currentView === 'sent' || currentView === 'scheduled') && (
-          <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
-            
-            {/* Header with Tabs */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white gap-4">
-              <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl self-start overflow-x-auto max-w-full">
-                <button 
-                  onClick={() => { setCurrentView('inbox'); pushInboxState(false, 'inbox'); }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${currentView === 'inbox' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  <Inbox className="w-4 h-4" /> Inbox
-                </button>
-                <button 
-                  onClick={() => { setCurrentView('sent'); pushInboxState(false, 'sent'); }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${currentView === 'sent' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  <Send className="w-4 h-4" /> Sent
-                </button>
-                {/* --- NEW SCHEDULED TAB --- */}
-                <button 
-                  onClick={() => { setCurrentView('scheduled'); pushInboxState(false, 'scheduled'); }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${currentView === 'scheduled' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  <Clock className="w-4 h-4" /> Scheduled
-                </button>
-              </div>
-
-              <div className="flex gap-2 self-end sm:self-auto">
-                <button 
-                  onClick={() => {
-                    if (currentView === 'scheduled') loadInbox(null, 'SCHEDULED');
-                    else loadInbox(null, currentView === 'sent' ? 'SENT' : 'INBOX');
-                  }} 
-                  disabled={loadingMessages} 
-                  className="p-2.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-all"
-                >
-                  <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
-                </button>
-                <button onClick={handleCompose} className="hidden sm:inline-flex bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold py-2.5 px-5 rounded-lg items-center gap-2 shadow-md">
-                  <Plus className="w-4 h-4" />Compose
-                </button>
-              </div>
-            </div>
-
-            {/* Message List */}
-            <div className="divide-y divide-slate-100">
-              {loadingMessages && messages.length === 0 ? (
-                <div className="p-12 text-center text-slate-500">Loading...</div>
-              ) : messages.length === 0 ? (
-                <div className="p-12 text-center text-slate-500">No messages found</div>
-              ) : messages.map((message) => {
-                // Display Logic
-                const isSent = currentView === 'sent';
-                const isScheduled = currentView === 'scheduled';
-                
-                // For Scheduled/Sent, we show the Recipient. For Inbox, the Sender.
-                const displayName = (isSent || isScheduled) ? extractSenderName(message.to) : extractSenderName(message.from);
-                const displayLabel = (isSent || isScheduled) ? `To: ${displayName}` : displayName;
-                
-                const { colorClass, initial } = getAvatarData(displayName);
-                
-                return (
-                  // We disable onClick for scheduled messages for now as they are drafts/database entries
-                  <div key={message.id} onClick={() => !isScheduled && loadMessageDetail(message.id)} className={`w-full text-left p-4 sm:p-5 hover:bg-slate-50 transition-all group flex items-start gap-4 ${message.isUnread ? 'bg-violet-50/50' : ''} ${!isScheduled ? 'cursor-pointer' : 'cursor-default'}`}>
-                    
-                    <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center text-base sm:text-lg font-bold shadow-sm flex-shrink-0 ${colorClass}`}>
-                      {initial}
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex justify-between items-baseline mb-1 gap-2">
-                        <span className={`font-semibold text-sm sm:text-base text-slate-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
-                           {displayLabel}
-                        </span>
-                        <div className={`flex items-center gap-1.5 text-xs flex-shrink-0 ${isScheduled ? 'text-emerald-600 font-bold bg-emerald-50 px-2 py-1 rounded-full' : 'text-slate-500'}`}>
-                          <Clock className="w-3.5 h-3.5" />
-                          <span>{isScheduled ? `Scheduled: ${formatDate(message.date)}` : formatDate(message.date)}</span>
-                        </div>
-                      </div>
-                      <div className={`text-sm sm:text-base mb-1 truncate ${message.isUnread ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>{message.subject}</div>
-                      <div className="text-sm text-slate-500 line-clamp-2">{message.snippet}</div>
-                    </div>
-                  </div>
-                );
-              })}
-              
-              {/* Only show Load More if not scheduled view (pagination not implemented for scheduled yet) */}
-              {nextPageToken && currentView !== 'scheduled' && (
-                <div className="p-5 text-center bg-slate-50">
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto bg-slate-50">
+          
+          {/* List Views (Inbox / Sent / Scheduled / Spam) */}
+          {(currentView === 'inbox' || currentView === 'sent' || currentView === 'scheduled' || currentView === 'spam') && (
+             <div className="max-w-4xl mx-auto p-4 md:p-8 pb-24 md:pb-8">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-bold text-slate-800 capitalize">
+                    {currentView}
+                  </h2>
                   <button 
-                    onClick={() => loadInbox(nextPageToken, currentView === 'sent' ? 'SENT' : 'INBOX')} 
+                    onClick={() => {
+                      if (currentView === 'scheduled') loadInbox(null, 'SCHEDULED');
+                      else if (currentView === 'spam') loadInbox(null, 'SPAM');
+                      else loadInbox(null, currentView === 'sent' ? 'SENT' : 'INBOX');
+                    }} 
                     disabled={loadingMessages} 
-                    className="text-violet-600 font-semibold hover:text-violet-700 px-6 py-2"
+                    className="p-2 text-slate-500 hover:bg-white hover:shadow-sm rounded-lg transition-all"
                   >
-                    Load More
+                    <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
                   </button>
                 </div>
-              )}
-            </div>
-          </div>
-        )}
 
-        {/* MESSAGE */}
-        {currentView === 'message' && selectedMessage && (
-          <div className="bg-white rounded-2xl shadow-xl flex flex-col h-full sm:h-auto pb-4 border border-slate-200">
-            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
-              <button onClick={() => { setCurrentView('inbox'); setSelectedMessage(null); setInlineReplyOpen(false); setSummary(''); setShowSummary(false); pushInboxState(); }} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 py-2 px-3 hover:bg-slate-100 rounded-lg"><ArrowLeft className="w-5 h-5" /><span className="hidden sm:inline font-medium">Back</span></button>
-              <div className="flex items-center gap-2">
-                <button onClick={handleSummarize} disabled={isSummarizing} className="bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-700 font-semibold py-2.5 px-4 rounded-lg flex items-center gap-2 shadow-sm">{isSummarizing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}<span className="hidden sm:inline">Summarize</span></button>
-                <button onClick={handleReplyClick} className="hidden sm:flex bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold py-2.5 px-5 rounded-lg items-center gap-2 shadow-md"><Reply className="w-4 h-4" /> Reply</button>
-              </div>
-            </div>
-            <div className="p-5 sm:p-7 overflow-y-auto">
-              <h2 className="text-xl sm:text-3xl font-bold text-slate-900 mb-5 break-words">{selectedMessage.subject}</h2>
-              <div className="mb-6 space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200 text-sm">
-                <div className="flex flex-col sm:flex-row gap-2"><span className="font-bold text-slate-700 min-w-[4rem]">From:</span><span className="text-slate-600 break-all font-medium">{selectedMessage.from}</span></div>
-                <div className="flex flex-col sm:flex-row gap-2"><span className="font-bold text-slate-700 min-w-[4rem]">To:</span><span className="text-slate-600 break-all font-medium">{selectedMessage.to}</span></div>
-              </div>
-              {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
-                <div className="mb-6"><h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2"><Paperclip className="w-4 h-4" />{selectedMessage.attachments.length} Attachment(s)</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{selectedMessage.attachments.map((att, index) => (
-                    <button key={index} onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)} className="flex items-center gap-3 p-4 bg-slate-50 border border-slate-200 rounded-xl hover:border-violet-400 shadow-sm"><div className="bg-violet-100 p-3 rounded-lg"><FileText className="w-5 h-5 text-violet-600" /></div><div className="flex-1 min-w-0 text-left"><p className="text-sm font-semibold truncate">{att.filename}</p><p className="text-xs text-slate-500">{(att.size / 1024).toFixed(0)} KB</p></div><Download className="w-4 h-4 text-slate-400" /></button>
-                  ))}</div>
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden divide-y divide-slate-100">
+                  {loadingMessages && messages.length === 0 ? (
+                    <div className="p-12 text-center text-slate-500">Loading...</div>
+                  ) : messages.length === 0 ? (
+                    <div className="p-12 text-center text-slate-500">No messages found</div>
+                  ) : messages.map((message) => {
+                    const isSent = currentView === 'sent';
+                    const isScheduled = currentView === 'scheduled';
+                    const isSpam = currentView === 'spam';
+                    
+                    // Display logic: Sent/Scheduled shows "To", Inbox/Spam shows "From"
+                    const displayName = (isSent || isScheduled) ? extractSenderName(message.to) : extractSenderName(message.from);
+                    const displayLabel = (isSent || isScheduled) ? `To: ${displayName}` : displayName;
+                    
+                    const { colorClass, initial } = getAvatarData(displayName);
+                    
+                    return (
+                      <div 
+                        key={message.id} 
+                        onClick={() => !isScheduled && loadMessageDetail(message.id)} 
+                        className={`w-full text-left p-4 hover:bg-slate-50 transition-all group flex items-start gap-4 ${message.isUnread ? 'bg-violet-50/50' : ''} ${!isScheduled ? 'cursor-pointer' : 'cursor-default'}`}
+                      >
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-base font-bold shadow-sm flex-shrink-0 ${colorClass}`}>
+                          {initial}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between items-baseline mb-1 gap-2">
+                            <span className={`font-semibold text-sm text-slate-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
+                               {displayLabel}
+                            </span>
+                            <div className={`flex items-center gap-1.5 text-xs flex-shrink-0 ${isScheduled ? 'text-emerald-600 font-bold bg-emerald-50 px-2 py-1 rounded-full' : (isSpam ? 'text-red-500 font-bold bg-red-50 px-2 py-1 rounded-full' : 'text-slate-500')}`}>
+                              {isSpam && <OctagonAlert className="w-3 h-3"/>}
+                              {!isSpam && <Clock className="w-3 h-3" />}
+                              <span>{isScheduled ? `Scheduled: ${formatDate(message.date)}` : (isSpam ? 'Spam' : formatDate(message.date))}</span>
+                            </div>
+                          </div>
+                          <div className={`text-sm mb-0.5 truncate ${message.isUnread ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>{message.subject}</div>
+                          <div className="text-sm text-slate-500 line-clamp-1">{message.snippet}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              )}
-              {showSummary && summary && <div className="mb-6 bg-indigo-50 border-2 border-indigo-200 rounded-xl p-5"><div className="flex justify-between items-start mb-3"><div className="flex items-center gap-2 text-indigo-800 font-bold"><Sparkles className="w-4 h-4" /><h3>AI Summary</h3></div><button onClick={() => setShowSummary(false)} className="text-indigo-400 hover:text-indigo-600"><X className="w-4 h-4" /></button></div><p className="text-indigo-900 text-sm leading-relaxed whitespace-pre-wrap">{summary}</p></div>}
-              <div className="border-t-2 border-slate-200 pt-6 mb-6">
-                {selectedMessage.isHtml ? <div className="w-full overflow-x-auto"><div className="prose prose-sm sm:prose max-w-none text-slate-800" dangerouslySetInnerHTML={{ __html: selectedMessage.body }} /></div> : <pre className="whitespace-pre-wrap text-slate-800 font-sans text-sm sm:text-base">{selectedMessage.body}</pre>}
-              </div>
-              {inlineReplyOpen && (
-                <div className="mt-6 border-2 border-violet-200 rounded-xl shadow-xl overflow-hidden">
-                  <div className="bg-violet-50 px-5 py-3 border-b-2 border-violet-200 flex justify-between items-center"><span className="text-sm font-bold text-violet-800">Replying...</span><button onClick={() => setInlineReplyOpen(false)}><X className="w-4 h-4 text-violet-500" /></button></div>
-                  <div className="p-5"><textarea value={replyBody} onChange={(e) => setReplyBody(e.target.value)} placeholder="Type reply..." className="w-full min-h-[150px] p-4 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 outline-none resize-y mb-4" autoFocus />
-                    {attachments.length > 0 && <div className="mb-4 space-y-2">{attachments.map((file, i) => <div key={i} className="flex justify-between bg-slate-50 p-3 rounded-lg"><span className="truncate text-sm">{file.name}</span><button onClick={() => removeAttachment(i)}><X className="w-4 h-4" /></button></div>)}</div>}
-                    <div className="flex gap-3"><input type="file" id="reply-file" onChange={handleFileSelect} className="hidden" multiple /><button onClick={sendInlineReply} disabled={loading} className="bg-violet-600 text-white font-bold py-3 px-6 rounded-xl flex gap-2"><Send className="w-4 h-4" /> Send</button><button onClick={() => document.getElementById('reply-file').click()} className="p-3 bg-slate-100 rounded-xl"><Paperclip className="w-5 h-5" /></button></div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* COMPOSE */}
-        {currentView === 'compose' && (
-          <div className="fixed inset-0 z-50 bg-white sm:relative sm:z-0 sm:bg-transparent sm:h-auto overflow-y-auto">
-            <div className="bg-white sm:rounded-2xl sm:shadow-xl min-h-screen sm:min-h-0 sm:border sm:border-slate-200">
-              <div className="flex items-center justify-between p-5 border-b border-slate-200 sticky top-0 bg-violet-50 z-10 sm:rounded-t-2xl">
-                <h2 className="text-lg font-bold text-slate-800">New Message</h2>
-                <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); pushInboxState(); }} className="p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X className="w-6 h-6" /></button>
-              </div>
-              <div className="p-5 sm:p-7 pb-32 sm:pb-24">
                 
-                {/* Desktop AI Card */}
-                <div className="hidden sm:block mb-6 bg-indigo-50 border-2 border-indigo-200 rounded-xl overflow-hidden shadow-md">
-                  <div className="px-5 py-3 border-b border-indigo-100 flex items-center justify-between bg-white/50">
-                    <h3 className="text-sm font-bold text-indigo-900 flex items-center gap-2"><Sparkles className="w-4 h-4" /> AI Assistant</h3>
-                    <div className="flex bg-slate-200 p-1 rounded-lg">
-                      <button onClick={() => setAiMode('voice')} className={`px-3 py-1 rounded-md text-xs font-bold ${aiMode === 'voice' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500'}`}>Voice</button>
-                      <button onClick={() => setAiMode('text')} className={`px-3 py-1 rounded-md text-xs font-bold ${aiMode === 'text' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500'}`}>Text</button>
+                {nextPageToken && currentView !== 'scheduled' && (
+                  <div className="py-6 text-center">
+                    <button 
+                      onClick={() => {
+                        if (currentView === 'spam') loadInbox(nextPageToken, 'SPAM');
+                        else loadInbox(nextPageToken, currentView === 'sent' ? 'SENT' : 'INBOX');
+                      }} 
+                      disabled={loadingMessages} 
+                      className="text-slate-500 font-medium hover:text-violet-600 bg-white border border-slate-200 px-6 py-2 rounded-full shadow-sm"
+                    >
+                      Load More
+                    </button>
+                  </div>
+                )}
+             </div>
+          )}
+
+          {/* Message Detail View */}
+          {currentView === 'message' && selectedMessage && (
+            <div className="p-4 md:p-8 max-w-4xl mx-auto h-full flex flex-col pb-24 md:pb-8">
+               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex-1 flex flex-col overflow-hidden">
+                 {/* Detail Header */}
+                 <div className="flex items-center justify-between p-4 border-b border-slate-100">
+                    <button onClick={() => { handleNavigation(window.location.hash.includes('spam') ? 'spam' : 'inbox'); pushInboxState(); }} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors">
+                      <ArrowLeft className="w-5 h-5" /> Back
+                    </button>
+                    <div className="flex gap-2">
+                       <button onClick={handleSummarize} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 font-medium text-sm">
+                          {isSummarizing ? <RefreshCw className="w-4 h-4 animate-spin"/> : <Sparkles className="w-4 h-4"/>} Summarize
+                       </button>
+                       <button onClick={handleReplyClick} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium text-sm">
+                          <Reply className="w-4 h-4" /> Reply
+                       </button>
+                    </div>
+                 </div>
+
+                 {/* Detail Content */}
+                 <div className="p-6 overflow-y-auto flex-1">
+                    <h2 className="text-2xl font-bold text-slate-900 mb-6">{selectedMessage.subject}</h2>
+                    <div className="flex gap-4 mb-6">
+                       <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold shadow-sm ${getAvatarData(extractSenderName(selectedMessage.from)).colorClass}`}>
+                          {getAvatarData(extractSenderName(selectedMessage.from)).initial}
+                       </div>
+                       <div>
+                          <p className="font-bold text-slate-900">{extractSenderName(selectedMessage.from)}</p>
+                          <p className="text-sm text-slate-500">{selectedMessage.from}</p>
+                          <p className="text-xs text-slate-400 mt-1">To: {selectedMessage.to}</p>
+                       </div>
+                    </div>
+                    
+                    {/* Attachments */}
+                    {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
+                      <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {selectedMessage.attachments.map((att, index) => (
+                          <button key={index} onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl hover:border-violet-400 transition-colors text-left">
+                            <div className="bg-violet-100 p-2 rounded-lg"><FileText className="w-5 h-5 text-violet-600" /></div>
+                            <div className="flex-1 min-w-0"><p className="text-sm font-semibold truncate">{att.filename}</p><p className="text-xs text-slate-500">{(att.size / 1024).toFixed(0)} KB</p></div>
+                            <Download className="w-4 h-4 text-slate-400" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Summary Box */}
+                    {showSummary && summary && (
+                      <div className="mb-6 bg-gradient-to-br from-indigo-50 to-white border border-indigo-100 rounded-xl p-5 shadow-sm">
+                        <div className="flex justify-between items-start mb-2">
+                           <h3 className="font-bold text-indigo-900 flex items-center gap-2"><Sparkles className="w-4 h-4"/> AI Summary</h3>
+                           <button onClick={() => setShowSummary(false)}><X className="w-4 h-4 text-indigo-400"/></button>
+                        </div>
+                        <p className="text-indigo-900 text-sm leading-relaxed">{summary}</p>
+                      </div>
+                    )}
+
+                    <div className="prose prose-sm max-w-none text-slate-800">
+                       {selectedMessage.isHtml 
+                         ? <div dangerouslySetInnerHTML={{ __html: selectedMessage.body }} /> 
+                         : <pre className="whitespace-pre-wrap font-sans">{selectedMessage.body}</pre>}
+                    </div>
+
+                    {/* Inline Reply Box */}
+                    {inlineReplyOpen && (
+                      <div className="mt-8 border border-slate-200 rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-bottom-5">
+                         <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex justify-between items-center">
+                            <span className="text-sm font-bold text-slate-700">Reply</span>
+                            <button onClick={() => setInlineReplyOpen(false)}><X className="w-4 h-4 text-slate-500" /></button>
+                         </div>
+                         <div className="p-4 bg-white">
+                            <textarea value={replyBody} onChange={(e) => setReplyBody(e.target.value)} placeholder="Type your reply..." className="w-full h-32 p-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-violet-500 outline-none resize-none mb-3" />
+                            <div className="flex justify-between items-center">
+                               <div className="flex gap-2">
+                                  <button onClick={() => document.getElementById('reply-file').click()} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500"><Paperclip className="w-5 h-5"/></button>
+                                  <input type="file" id="reply-file" onChange={handleFileSelect} className="hidden" multiple />
+                                  {attachments.length > 0 && <span className="text-xs bg-slate-100 px-2 py-1 rounded-md self-center">{attachments.length} files</span>}
+                               </div>
+                               <button onClick={sendInlineReply} disabled={loading} className="bg-violet-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-violet-700">Send Reply</button>
+                            </div>
+                         </div>
+                      </div>
+                    )}
+                 </div>
+               </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* --- MOBILE FLOATING BUTTONS (Compose FAB) --- */}
+      {/* Kept FAB for mobile quick access even with drawer */}
+      {(currentView === 'inbox' || currentView === 'sent' || currentView === 'scheduled' || currentView === 'spam') && (
+        <button onClick={handleCompose} className="md:hidden fixed right-4 bottom-6 bg-violet-600 text-white p-4 rounded-full shadow-lg z-30 active:scale-95 transition-transform">
+          <Plus className="w-6 h-6" />
+        </button>
+      )}
+
+      {/* Message Actions FAB (Only on message view) */}
+      {currentView === 'message' && !inlineReplyOpen && (
+        <div className="md:hidden fixed right-4 bottom-6 flex flex-col gap-3 z-30">
+          <button onClick={handleSummarize} className="bg-indigo-600 text-white p-3 rounded-full shadow-lg active:scale-95 transition-transform"><Sparkles className="w-6 h-6" /></button>
+          <button onClick={handleReplyClick} className="bg-violet-600 text-white p-3 rounded-full shadow-lg active:scale-95 transition-transform"><Reply className="w-6 h-6" /></button>
+        </div>
+      )}
+
+      {/* --- COMPOSE MODAL (Overlay) --- */}
+      {currentView === 'compose' && (
+          <div className="fixed inset-0 z-50 bg-white md:bg-black/50 md:flex md:items-center md:justify-center p-0 md:p-4">
+            <div className="bg-white w-full h-full md:h-auto md:max-w-2xl md:max-h-[85vh] md:rounded-2xl md:shadow-2xl overflow-hidden flex flex-col">
+              {/* Compose Header */}
+              <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-slate-50">
+                <h2 className="text-lg font-bold text-slate-800">New Message</h2>
+                <button onClick={() => { setShowCompose(false); handleNavigation('inbox'); }} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X className="w-5 h-5" /></button>
+              </div>
+              
+              {/* Compose Body (Scrollable) */}
+              <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-32 md:pb-6">
+                
+                {/* Desktop AI Assistant */}
+                <div className="hidden md:block mb-6 bg-indigo-50 border border-indigo-100 rounded-xl overflow-hidden">
+                  <div className="flex border-b border-indigo-100 bg-white/50 px-4 py-2 justify-between items-center">
+                    <span className="text-xs font-bold text-indigo-800 flex items-center gap-1"><Sparkles className="w-3 h-3"/> AI Assistant</span>
+                    <div className="flex bg-slate-200 rounded-lg p-0.5">
+                      <button onClick={() => setAiMode('voice')} className={`px-3 py-0.5 rounded-md text-xs font-bold transition-all ${aiMode === 'voice' ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-500'}`}>Voice</button>
+                      <button onClick={() => setAiMode('text')} className={`px-3 py-0.5 rounded-md text-xs font-bold transition-all ${aiMode === 'text' ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-500'}`}>Text</button>
                     </div>
                   </div>
-                  <div className="p-5">
+                  <div className="p-4">
                     {aiMode === 'voice' ? (
-                      <button onClick={handleAudioToggle} disabled={isAiProcessing} className={`w-full py-4 rounded-xl font-bold text-white transition-all shadow-lg flex items-center justify-center gap-2 ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                        {isRecording ? <Square className="w-5 h-5" /> : <Mic className="w-5 h-5" />}{isRecording ? 'Stop Recording' : 'Tap to Speak'}
+                      <button onClick={handleAudioToggle} disabled={isAiProcessing} className={`w-full py-3 rounded-lg font-bold text-white transition-all flex items-center justify-center gap-2 ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+                        {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}{isRecording ? 'Stop Recording' : 'Tap to Speak'}
                       </button>
                     ) : (
-                      <div className="space-y-3">
-                        <textarea value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} placeholder="e.g. Write a polite email..." className="w-full p-3 rounded-xl border border-indigo-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm resize-none h-24 bg-white" />
-                        <button onClick={handleAiTextSubmit} disabled={isAiProcessing || !aiInstruction.trim()} className="w-full py-2.5 bg-indigo-600 text-white rounded-lg font-bold text-sm shadow-md flex items-center justify-center gap-2">{isAiProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} Generate</button>
+                      <div className="flex gap-2">
+                        <input value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} placeholder="Describe email..." className="flex-1 px-3 py-2 rounded-lg border border-indigo-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        <button onClick={handleAiTextSubmit} disabled={isAiProcessing || !aiInstruction.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold">Generate</button>
                       </div>
                     )}
                   </div>
                 </div>
 
-                {/* Form Fields */}
-                <div className="mb-5 relative">
-                  <div className="flex justify-between items-center mb-2"><label className="text-sm font-bold text-slate-700">To</label><button type="button" onClick={() => setShowCcBcc(!showCcBcc)} className="text-xs font-semibold text-violet-600">CC/BCC</button></div>
-                  <div className="relative"><input type="text" value={toField} onChange={(e) => setToField(e.target.value)} onFocus={() => setActiveField('to')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'to')} placeholder="Recipient" className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 outline-none font-medium" />{renderSuggestions('to')}</div>
+                <div className="space-y-4">
+                   <div className="relative">
+                      <div className="flex justify-between"><label className="text-xs font-bold text-slate-500 uppercase">To</label><button onClick={() => setShowCcBcc(!showCcBcc)} className="text-xs text-violet-600 font-semibold">CC/BCC</button></div>
+                      <input value={toField} onChange={(e) => setToField(e.target.value)} onFocus={() => setActiveField('to')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'to')} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none font-medium text-slate-800" placeholder="Recipient" />
+                      {renderSuggestions('to')}
+                   </div>
+                   {showCcBcc && (
+                     <>
+                       <div className="relative"><label className="text-xs font-bold text-slate-500 uppercase">Cc</label><input value={ccField} onChange={(e) => setCcField(e.target.value)} onFocus={() => setActiveField('cc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'cc')} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none" />{renderSuggestions('cc')}</div>
+                       <div className="relative"><label className="text-xs font-bold text-slate-500 uppercase">Bcc</label><input value={bccField} onChange={(e) => setBccField(e.target.value)} onFocus={() => setActiveField('bcc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'bcc')} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none" />{renderSuggestions('bcc')}</div>
+                     </>
+                   )}
+                   <div><label className="text-xs font-bold text-slate-500 uppercase">Subject</label><input value={subject} onChange={(e) => setSubject(e.target.value)} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none font-bold text-lg text-slate-800" placeholder="Add a subject" /></div>
+                   <textarea value={body} onChange={(e) => setBody(e.target.value)} className="w-full h-64 py-2 outline-none resize-none text-slate-700 leading-relaxed" placeholder="Type your message..." />
+                   
+                   {/* Attachments List */}
+                   {attachments.length > 0 && (
+                     <div className="flex flex-wrap gap-2">
+                       {attachments.map((file, i) => (
+                         <div key={i} className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+                           <span className="text-xs font-medium truncate max-w-[150px]">{file.name}</span>
+                           <button onClick={() => removeAttachment(i)}><X className="w-3 h-3 text-slate-500 hover:text-red-500"/></button>
+                         </div>
+                       ))}
+                     </div>
+                   )}
                 </div>
-                {showCcBcc && <div className="mb-5 space-y-4">
-                  <div className="relative"><label className="text-sm font-bold text-slate-700">CC</label><input type="text" value={ccField} onChange={(e) => setCcField(e.target.value)} onFocus={() => setActiveField('cc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'cc')} className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500" />{renderSuggestions('cc')}</div>
-                  <div className="relative"><label className="text-sm font-bold text-slate-700">BCC</label><input type="text" value={bccField} onChange={(e) => setBccField(e.target.value)} onFocus={() => setActiveField('bcc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'bcc')} className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500" />{renderSuggestions('bcc')}</div>
-                </div>}
-                <div className="mb-5"><label className="text-sm font-bold text-slate-700">Subject</label><input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 outline-none font-medium" /></div>
-                <div className="mb-5 flex-1"><label className="text-sm font-bold text-slate-700">Message</label><textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Compose email..." className="w-full px-4 py-3.5 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 outline-none resize-y min-h-[200px] font-medium" /></div>
-                {attachments.length > 0 && <div className="mb-5 space-y-2">{attachments.map((file, i) => <div key={i} className="flex justify-between bg-slate-50 p-3 rounded-xl border-2 border-slate-200"><span className="truncate text-sm font-semibold">{file.name}</span><button onClick={() => removeAttachment(i)}><X className="w-4 h-4" /></button></div>)}</div>}
 
-                <div className="flex gap-3 pt-2 items-center">
-                  <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
-                  
-                  <div className="flex items-center gap-2 flex-1 sm:flex-none">
-                    {/* Send / Schedule Button */}
-                    <button 
-                      onClick={handleSend} 
-                      disabled={loading} 
-                      className={`flex-1 sm:flex-none text-white font-bold py-3.5 px-6 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all ${scheduleTime ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-violet-600 hover:bg-violet-700'}`}
-                    >
-                      {scheduleTime ? <Calendar className="w-4 h-4" /> : <Send className="w-4 h-4" />} 
-                      {scheduleTime ? 'Schedule Send' : 'Send'}
-                    </button>
-
-                    {/* Schedule Toggle Button */}
-                    <button 
-                      onClick={() => setShowScheduleInput(!showScheduleInput)} 
-                      className={`p-3.5 border-2 rounded-xl transition-all ${showScheduleInput || scheduleTime ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}
-                      title="Schedule send"
-                    >
-                      <Clock className="w-5 h-5" />
-                    </button>
+                {/* Footer / Send Area */}
+                <div className="flex items-center gap-3 mt-6 pt-4 border-t border-slate-100">
+                  <div className="flex items-center gap-2 flex-1">
+                     <button onClick={handleSend} disabled={loading} className={`px-6 py-2.5 rounded-xl font-bold text-white shadow-lg flex items-center gap-2 transition-all ${scheduleTime ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-violet-600 hover:bg-violet-700'}`}>
+                        {scheduleTime ? <Calendar className="w-4 h-4" /> : <Send className="w-4 h-4" />} {scheduleTime ? 'Schedule' : 'Send'}
+                     </button>
+                     <div className="relative">
+                        <button onClick={() => setShowScheduleInput(!showScheduleInput)} className={`p-2.5 rounded-xl border ${scheduleTime ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}><Clock className="w-5 h-5"/></button>
+                        {showScheduleInput && (
+                           <div className="absolute bottom-14 left-0 bg-white p-3 rounded-xl shadow-xl border border-slate-200 w-64 animate-in slide-in-from-bottom-2">
+                              <label className="text-xs font-bold text-slate-500 mb-2 block">Pick date & time</label>
+                              <input type="datetime-local" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-full text-sm p-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 mb-2"/>
+                              {scheduleTime && <button onClick={() => { setScheduleTime(''); setShowScheduleInput(false); }} className="text-xs text-red-500 font-bold w-full text-center hover:underline">Clear Schedule</button>}
+                           </div>
+                        )}
+                     </div>
+                     <button onClick={() => fileInputRef.current.click()} className="p-2.5 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"><Paperclip className="w-5 h-5"/></button>
+                     <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
                   </div>
-
-                  {/* Date Input Popover */}
-                  {showScheduleInput && (
-                    <div className="absolute bottom-20 left-4 sm:left-auto bg-white p-4 rounded-xl shadow-2xl border border-slate-200 z-50 animate-in slide-in-from-bottom-2">
-                      <div className="text-sm font-bold text-slate-700 mb-2">Pick a time</div>
-                      <input 
-                        type="datetime-local" 
-                        value={scheduleTime}
-                        onChange={(e) => setScheduleTime(e.target.value)}
-                        className="p-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
-                      />
-                      {scheduleTime && (
-                        <button 
-                          onClick={() => { setScheduleTime(''); setShowScheduleInput(false); }} 
-                          className="mt-2 text-xs text-red-500 font-bold hover:underline"
-                        >
-                          Clear Schedule
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  <button onClick={() => fileInputRef.current.click()} className="p-3.5 bg-white border-2 border-slate-200 rounded-xl hover:bg-slate-50"><Paperclip className="w-5 h-5" /></button>
-                  <button onClick={() => { setShowCompose(false); setCurrentView('inbox'); clearAttachments(); pushInboxState(); }} className="hidden sm:block bg-slate-100 text-slate-700 font-bold py-3.5 px-8 rounded-xl">Cancel</button>
                 </div>
               </div>
+
+              {/* Mobile AI Menu (Bottom) */}
+              <div className="md:hidden">
+                 {showMobileTextInput ? (
+                    <div className="p-4 bg-slate-50 border-t border-slate-200 animate-in slide-in-from-bottom">
+                       <div className="flex gap-2">
+                          <textarea value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} className="flex-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-20" placeholder="Describe email..." autoFocus />
+                          <div className="flex flex-col gap-2">
+                             <button onClick={() => setShowMobileTextInput(false)} className="p-2 bg-slate-200 rounded-lg text-slate-600"><ChevronUp className="w-5 h-5 rotate-180"/></button>
+                             <button onClick={handleAiTextSubmit} className="flex-1 bg-indigo-600 text-white rounded-lg flex items-center justify-center"><Send className="w-5 h-5"/></button>
+                          </div>
+                       </div>
+                    </div>
+                 ) : (
+                    <div className="absolute bottom-6 right-6 flex flex-col items-end gap-3 pointer-events-none">
+                       {showMobileAiMenu && (
+                          <>
+                             <button onClick={() => { setShowMobileTextInput(true); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Keyboard className="w-5 h-5"/><span className="text-xs font-bold">Type</span></button>
+                             <button onClick={() => { handleAudioToggle(); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Mic className="w-5 h-5"/><span className="text-xs font-bold">Speak</span></button>
+                          </>
+                       )}
+                       <button onClick={() => { if(isRecording) handleAudioToggle(); else setShowMobileAiMenu(!showMobileAiMenu); }} className={`pointer-events-auto p-4 rounded-full shadow-xl text-white transition-all ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-indigo-600'}`}>
+                          {isRecording ? <Square className="w-6 h-6"/> : <Sparkles className="w-6 h-6"/>}
+                       </button>
+                    </div>
+                 )}
+              </div>
+
             </div>
           </div>
-        )}
-      </main>
-
-      {/* --- FLOATING BUTTONS --- */}
-      {currentView === 'inbox' && (
-        <button onClick={handleCompose} className="fixed right-6 bottom-6 sm:hidden bg-violet-600 text-white p-5 rounded-full shadow-2xl z-30 transform hover:scale-110 transition-transform active:scale-95"><Plus className="w-6 h-6" /></button>
       )}
 
-      {currentView === 'message' && !inlineReplyOpen && (
-        <div className="fixed right-6 bottom-6 sm:hidden flex flex-col gap-3 z-30">
-          <button onClick={handleSummarize} className="bg-indigo-600 text-white p-4 rounded-full shadow-2xl transform hover:scale-110 active:scale-95"><Sparkles className="w-6 h-6" /></button>
-          <button onClick={handleReplyClick} className="bg-violet-600 text-white p-4 rounded-full shadow-2xl transform hover:scale-110 active:scale-95"><Reply className="w-6 h-6" /></button>
-        </div>
-      )}
-
-      {/* --- MOBILE AI MENU & TEXT INPUT --- */}
-      {currentView === 'compose' && (
-        <>
-          {showMobileTextInput && (
-            <div className="fixed inset-x-0 bottom-0 z-[60] bg-white sm:hidden p-4 rounded-t-3xl shadow-[0_-5px_20px_rgba(0,0,0,0.1)] border-t border-slate-100 animate-in slide-in-from-bottom duration-200">
-               <div className="flex items-center justify-between mb-3 px-1">
-                 <span className="text-sm font-bold text-indigo-600 flex items-center gap-2"><Sparkles className="w-4 h-4"/> AI Assistant</span>
-                 <button onClick={() => setShowMobileTextInput(false)} className="bg-slate-100 p-1 rounded-full"><ChevronUp className="w-4 h-4 rotate-180 text-slate-500" /></button>
-               </div>
-               <div className="flex gap-2 items-end">
-                 <textarea value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} placeholder="Describe email to generate..." className="flex-1 bg-slate-50 border-2 border-slate-200 rounded-2xl p-4 focus:ring-2 focus:ring-indigo-500 outline-none text-base resize-none max-h-32 min-h-[80px]" autoFocus />
-                 <button onClick={handleAiTextSubmit} disabled={!aiInstruction.trim() || isAiProcessing} className="bg-indigo-600 text-white p-4 rounded-full shadow-lg disabled:opacity-50 mb-1">{isAiProcessing ? <RefreshCw className="w-6 h-6 animate-spin" /> : <Send className="w-6 h-6" />}</button>
-               </div>
-            </div>
-          )}
-          {!showMobileTextInput && (
-            <div className="fixed right-6 bottom-6 sm:hidden flex flex-col items-end gap-4 z-[60]">
-              {showMobileAiMenu && (
-                <div className="flex items-center gap-3 animate-in slide-in-from-bottom-4 fade-in duration-200"><span className="bg-white px-3 py-1 rounded-lg shadow-md text-sm font-bold text-slate-700">Type</span><button onClick={() => { setShowMobileTextInput(true); setShowMobileAiMenu(false); }} className="bg-white text-indigo-600 p-4 rounded-full shadow-xl border border-indigo-100 hover:bg-indigo-50"><Keyboard className="w-6 h-6" /></button></div>
-              )}
-              {showMobileAiMenu && (
-                <div className="flex items-center gap-3 animate-in slide-in-from-bottom-2 fade-in duration-200"><span className="bg-white px-3 py-1 rounded-lg shadow-md text-sm font-bold text-slate-700">Speak</span><button onClick={() => { handleAudioToggle(); setShowMobileAiMenu(false); }} className="bg-white text-indigo-600 p-4 rounded-full shadow-xl border border-indigo-100 hover:bg-indigo-50"><Mic className="w-6 h-6" /></button></div>
-              )}
-              <button onClick={handleMobileFabClick} className={`p-5 rounded-full shadow-2xl text-white transition-all transform hover:scale-110 active:scale-95 ${isRecording ? 'bg-red-500 animate-pulse' : showMobileAiMenu ? 'bg-slate-700 rotate-45' : 'bg-indigo-600'}`}>
-                {isRecording ? <Square className="w-6 h-6" /> : (showMobileAiMenu ? <Plus className="w-6 h-6" /> : <Sparkles className="w-6 h-6" />)}
-              </button>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Reply Menu Modal */}
+      {/* Reply Menu (Modal) */}
       {showReplyMenu && (
-        <div className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+        <div className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-end md:items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-10 border border-slate-200">
             <div className="p-5 bg-violet-50 border-b border-slate-200 flex justify-between items-center"><h3 className="font-bold text-slate-800">Reply Option</h3><button onClick={() => setShowReplyMenu(false)}><X className="w-5 h-5 text-slate-500" /></button></div>
             <div className="p-3 space-y-2">
@@ -962,6 +1061,7 @@ const GmailComposeApp = () => {
           </div>
         </div>
       )}
+
     </div>
   );
 };
