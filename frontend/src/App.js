@@ -184,14 +184,20 @@ const GmailComposeApp = () => {
     }
   }, []);
 
-  // Renamed logic inside loadInbox to support label argument
+  // Replace your existing loadInbox function with this:
   const loadInbox = useCallback(async (pageToken = null, label = 'INBOX') => {
     setLoadingMessages(true);
     try {
-      // Pass the label query param
-      const url = pageToken 
-        ? `${API_BASE}/inbox/messages?pageToken=${pageToken}&label=${label}` 
-        : `${API_BASE}/inbox/messages?label=${label}`;
+      let url;
+      // Check if we are loading scheduled messages
+      if (label === 'SCHEDULED') {
+        url = `${API_BASE}/scheduled/messages`;
+      } else {
+        // Standard Gmail API
+        url = pageToken 
+          ? `${API_BASE}/inbox/messages?pageToken=${pageToken}&label=${label}` 
+          : `${API_BASE}/inbox/messages?label=${label}`;
+      }
         
       const response = await fetch(url, { credentials: 'include' });
       const data = await response.json();
@@ -276,6 +282,7 @@ const GmailComposeApp = () => {
     if (isAuthenticated) {
       if (currentView === 'inbox') loadInbox(null, 'INBOX');
       else if (currentView === 'sent') loadInbox(null, 'SENT');
+      else if (currentView === 'scheduled') loadInbox(null, 'SCHEDULED'); // <--- ADD THIS
     }
   }, [isAuthenticated, currentView, loadInbox]);
 
@@ -657,30 +664,40 @@ const GmailComposeApp = () => {
           </div>
         )}
 
-        {/* INBOX & SENT VIEW */}
-        {(currentView === 'inbox' || currentView === 'sent') && (
+        {/* INBOX, SENT & SCHEDULED VIEW */}
+        {(currentView === 'inbox' || currentView === 'sent' || currentView === 'scheduled') && (
           <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
             
             {/* Header with Tabs */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white gap-4">
-              <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl self-start">
+              <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl self-start overflow-x-auto max-w-full">
                 <button 
                   onClick={() => { setCurrentView('inbox'); pushInboxState(false, 'inbox'); }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${currentView === 'inbox' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${currentView === 'inbox' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                 >
                   <Inbox className="w-4 h-4" /> Inbox
                 </button>
                 <button 
                   onClick={() => { setCurrentView('sent'); pushInboxState(false, 'sent'); }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${currentView === 'sent' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${currentView === 'sent' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                 >
                   <Send className="w-4 h-4" /> Sent
+                </button>
+                {/* --- NEW SCHEDULED TAB --- */}
+                <button 
+                  onClick={() => { setCurrentView('scheduled'); pushInboxState(false, 'scheduled'); }}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${currentView === 'scheduled' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <Clock className="w-4 h-4" /> Scheduled
                 </button>
               </div>
 
               <div className="flex gap-2 self-end sm:self-auto">
                 <button 
-                  onClick={() => loadInbox(null, currentView === 'sent' ? 'SENT' : 'INBOX')} 
+                  onClick={() => {
+                    if (currentView === 'scheduled') loadInbox(null, 'SCHEDULED');
+                    else loadInbox(null, currentView === 'sent' ? 'SENT' : 'INBOX');
+                  }} 
                   disabled={loadingMessages} 
                   className="p-2.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-all"
                 >
@@ -699,16 +716,20 @@ const GmailComposeApp = () => {
               ) : messages.length === 0 ? (
                 <div className="p-12 text-center text-slate-500">No messages found</div>
               ) : messages.map((message) => {
-                // Display Logic: If Sent view, show 'To' name. If Inbox, show 'From' name.
+                // Display Logic
                 const isSent = currentView === 'sent';
-                const displayName = isSent ? extractSenderName(message.to) : extractSenderName(message.from);
-                const displayLabel = isSent ? `To: ${displayName}` : displayName;
+                const isScheduled = currentView === 'scheduled';
+                
+                // For Scheduled/Sent, we show the Recipient. For Inbox, the Sender.
+                const displayName = (isSent || isScheduled) ? extractSenderName(message.to) : extractSenderName(message.from);
+                const displayLabel = (isSent || isScheduled) ? `To: ${displayName}` : displayName;
                 
                 const { colorClass, initial } = getAvatarData(displayName);
                 
                 return (
-                  <button key={message.id} onClick={() => loadMessageDetail(message.id)} className={`w-full text-left p-4 sm:p-5 hover:bg-slate-50 transition-all group flex items-start gap-4 ${message.isUnread ? 'bg-violet-50/50' : ''}`}>
-                    {/* Avatar Circle */}
+                  // We disable onClick for scheduled messages for now as they are drafts/database entries
+                  <div key={message.id} onClick={() => !isScheduled && loadMessageDetail(message.id)} className={`w-full text-left p-4 sm:p-5 hover:bg-slate-50 transition-all group flex items-start gap-4 ${message.isUnread ? 'bg-violet-50/50' : ''} ${!isScheduled ? 'cursor-pointer' : 'cursor-default'}`}>
+                    
                     <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center text-base sm:text-lg font-bold shadow-sm flex-shrink-0 ${colorClass}`}>
                       {initial}
                     </div>
@@ -718,18 +739,20 @@ const GmailComposeApp = () => {
                         <span className={`font-semibold text-sm sm:text-base text-slate-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
                            {displayLabel}
                         </span>
-                        <div className="flex items-center gap-1.5 text-xs text-slate-500 flex-shrink-0">
-                          <Clock className="w-3.5 h-3.5" /><span className="font-medium">{formatDate(message.date)}</span>
+                        <div className={`flex items-center gap-1.5 text-xs flex-shrink-0 ${isScheduled ? 'text-emerald-600 font-bold bg-emerald-50 px-2 py-1 rounded-full' : 'text-slate-500'}`}>
+                          <Clock className="w-3.5 h-3.5" />
+                          <span>{isScheduled ? `Scheduled: ${formatDate(message.date)}` : formatDate(message.date)}</span>
                         </div>
                       </div>
                       <div className={`text-sm sm:text-base mb-1 truncate ${message.isUnread ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>{message.subject}</div>
                       <div className="text-sm text-slate-500 line-clamp-2">{message.snippet}</div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
               
-              {nextPageToken && (
+              {/* Only show Load More if not scheduled view (pagination not implemented for scheduled yet) */}
+              {nextPageToken && currentView !== 'scheduled' && (
                 <div className="p-5 text-center bg-slate-50">
                   <button 
                     onClick={() => loadInbox(nextPageToken, currentView === 'sent' ? 'SENT' : 'INBOX')} 

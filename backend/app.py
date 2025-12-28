@@ -800,6 +800,58 @@ def get_inbox_messages():
             'error': str(e)
         }), 500
 
+@app.route('/api/scheduled/messages', methods=['GET'])
+def get_scheduled_messages():
+    """Fetch pending scheduled emails from Firestore"""
+    try:
+        user_email = get_current_user_email()
+        if not user_email:
+            return jsonify({'success': False, 'error': 'Auth required'}), 401
+
+        # Query Firestore for pending emails for this user
+        docs_stream = get_db().collection('scheduled_emails')\
+            .where('user_email', '==', user_email)\
+            .where('status', '==', 'pending')\
+            .stream()
+
+        scheduled_messages = []
+        for doc in docs_stream:
+            data = doc.to_dict()
+            
+            # Convert Firestore timestamp/datetime to ISO string
+            scheduled_at = data.get('scheduled_at')
+            if hasattr(scheduled_at, 'isoformat'):
+                scheduled_at = scheduled_at.isoformat()
+            
+            # Format to match the structure used by the frontend message list
+            scheduled_messages.append({
+                'id': doc.id, # Firestore ID
+                'draft_id': data.get('draft_id'),
+                'subject': data.get('subject', '(No Subject)'),
+                'from': user_email,
+                'to': data.get('recipient'),
+                'date': scheduled_at, # Using scheduled time as the date
+                'snippet': 'Scheduled for delivery...', # Placeholder
+                'isUnread': False,
+                'isScheduled': True # Flag for frontend
+            })
+
+        # Sort by scheduled time (earliest first) in Python
+        # (Avoids needing a composite index in Firestore immediately)
+        scheduled_messages.sort(key=lambda x: x['date'])
+
+        return jsonify({
+            'success': True,
+            'messages': scheduled_messages,
+            'nextPageToken': None # No pagination for simplicity in this view
+        })
+
+    except Exception as e:
+        print(f"Scheduled fetch error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/inbox/message/<message_id>', methods=['GET'])
 def get_message_detail(message_id):
@@ -890,6 +942,7 @@ def get_message_detail(message_id):
             'error': str(e)
         }), 500
     
+
 
 summarizer_service = EmailSummarizer()
 @app.route('/api/email/summarize', methods=['POST', 'OPTIONS'])
