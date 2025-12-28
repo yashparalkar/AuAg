@@ -717,31 +717,48 @@ def transcribe_audio():
     finally:
         os.remove(audio_path)
 
+# app.py
+
 @app.route('/api/inbox/messages', methods=['GET'])
 def get_inbox_messages():
-    """Fetch recent emails from user's inbox or sent folder"""
+    """Fetch recent emails from user's inbox, sent folder, OR SEARCH RESULTS"""
     try:
-        # Get pagination parameters and Label
+        # Get pagination parameters
         page_token = request.args.get('pageToken')
         max_results = int(request.args.get('maxResults', 20))
-        label_id = request.args.get('label', 'INBOX').upper() # Default to INBOX, allow SENT
+        label_id = request.args.get('label', 'INBOX').upper()
+        
+        # --- NEW: Get Search Query ---
+        query = request.args.get('q') 
         
         service = get_gmail_service_from_session()
         if not service:
             return jsonify({'error': 'Not authenticated'}), 401
 
-        # Fetch messages list based on Label
-        results = service.users().messages().list(
-            userId='me',
-            maxResults=max_results,
-            pageToken=page_token,
-            labelIds=[label_id]
-        ).execute()
+        # --- LOGIC UPDATE ---
+        if query:
+            # If searching, use the 'q' parameter
+            # We don't restrict by labelIds when searching (usually user wants to search all mail)
+            results = service.users().messages().list(
+                userId='me',
+                maxResults=max_results,
+                pageToken=page_token,
+                q=query  # Pass the search query to Gmail
+            ).execute()
+        else:
+            # Standard View (Inbox, Sent, Spam, etc.)
+            results = service.users().messages().list(
+                userId='me',
+                maxResults=max_results,
+                pageToken=page_token,
+                labelIds=[label_id]
+            ).execute()
 
         messages = results.get('messages', [])
         next_page_token = results.get('nextPageToken')
 
-        # Fetch full details for each message
+        # ... (The rest of the function remains exactly the same: fetching details, etc.) ...
+        
         detailed_messages = []
         for msg in messages:
             try:
@@ -751,14 +768,12 @@ def get_inbox_messages():
                     format='full'
                 ).execute()
 
-                # Extract headers
                 headers = message['payload'].get('headers', [])
                 subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
                 from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
-                to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), 'Unknown') # Added TO field
+                to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), 'Unknown')
                 date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
                 
-                # Extract body (Simplified logic for preview)
                 body = ''
                 if 'parts' in message['payload']:
                     for part in message['payload']['parts']:
@@ -768,7 +783,6 @@ def get_inbox_messages():
                 elif 'body' in message['payload'] and 'data' in message['payload']['body']:
                     body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8', errors='ignore')
 
-                # Check if unread
                 is_unread = 'UNREAD' in message.get('labelIds', [])
 
                 detailed_messages.append({
@@ -776,7 +790,7 @@ def get_inbox_messages():
                     'threadId': message['threadId'],
                     'subject': subject,
                     'from': from_email,
-                    'to': to_email, # Return TO field
+                    'to': to_email,
                     'date': date,
                     'snippet': message.get('snippet', ''),
                     'body': body[:500],
@@ -795,10 +809,7 @@ def get_inbox_messages():
 
     except Exception as e:
         print(f"Inbox fetch error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/scheduled/messages', methods=['GET'])
 def get_scheduled_messages():
@@ -1146,7 +1157,6 @@ def run_schedule_checker():
             time.sleep(60)
 
 
-# Start the background thread with better error handling
 print("🚀 Initializing scheduler thread...")
 
 scheduler_thread = threading.Thread(
