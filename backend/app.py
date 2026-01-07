@@ -842,37 +842,48 @@ def get_message_detail(message_id):
         to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
         date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
         
-        body = ''
         body_html = ''
         body_plain = ''
         
-        if 'parts' in message['payload']:
-            for part in message['payload']['parts']:
-                if part['mimeType'] == 'text/plain' and 'data' in part['body']:
-                    body_plain = base64.urlsafe_b64decode(
-                        part['body']['data']
-                    ).decode('utf-8', errors='ignore')
-                elif part['mimeType'] == 'text/html' and 'data' in part['body']:
-                    body_html = base64.urlsafe_b64decode(
-                        part['body']['data']
-                    ).decode('utf-8', errors='ignore')
+        # --- 1. NEW: Helper to extract attachments recursively ---
+        def get_attachments(parts):
+            atts = []
+            if not parts: return atts
+            for part in parts:
+                if part.get('filename') and part.get('body') and part['body'].get('attachmentId'):
+                    atts.append({
+                        'filename': part['filename'],
+                        'mimeType': part['mimeType'],
+                        'size': int(part['body'].get('size', 0)),
+                        'attachmentId': part['body']['attachmentId']
+                    })
+                if part.get('parts'):
+                    atts.extend(get_attachments(part['parts']))
+            return atts
+        # ---------------------------------------------------------
 
+        payload = message.get('payload', {})
+        parts = payload.get('parts', [])
+        
+        # Extract the attachments using the helper
+        attachments = get_attachments(parts)
+
+        # Logic to find Body Text/HTML
+        if parts:
+            for part in parts:
+                if part['mimeType'] == 'text/plain' and 'data' in part['body']:
+                    body_plain = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                elif part['mimeType'] == 'text/html' and 'data' in part['body']:
+                    body_html = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
                 elif part['mimeType'].startswith('multipart/') and 'parts' in part:
                     for subpart in part['parts']:
                         if subpart['mimeType'] == 'text/plain' and 'data' in subpart['body']:
-                            body_plain = base64.urlsafe_b64decode(
-                                subpart['body']['data']
-                            ).decode('utf-8', errors='ignore')
+                            body_plain = base64.urlsafe_b64decode(subpart['body']['data']).decode('utf-8', errors='ignore')
                         elif subpart['mimeType'] == 'text/html' and 'data' in subpart['body']:
-                            body_html = base64.urlsafe_b64decode(
-                                subpart['body']['data']
-                            ).decode('utf-8', errors='ignore')
-        elif 'body' in message['payload'] and 'data' in message['payload']['body']:
-            content = base64.urlsafe_b64decode(
-                message['payload']['body']['data']
-            ).decode('utf-8', errors='ignore')
-            
-            if message['payload']['mimeType'] == 'text/html':
+                            body_html = base64.urlsafe_b64decode(subpart['body']['data']).decode('utf-8', errors='ignore')
+        elif 'body' in payload and 'data' in payload['body']:
+            content = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
+            if payload['mimeType'] == 'text/html':
                 body_html = content
             else:
                 body_plain = content
@@ -896,12 +907,15 @@ def get_message_detail(message_id):
                 'to': to_email,
                 'date': date,
                 'body': body,
-                'isHtml': is_html
+                'isHtml': is_html,
+                'attachments': attachments  # <--- WE SEND THE ATTACHMENTS HERE
             }
         })
 
     except Exception as e:
         print(f"Message detail error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': str(e)
