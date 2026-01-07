@@ -1,856 +1,1141 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar, Menu, LogOut, OctagonAlert, Search } from 'lucide-react';
+from flask import Flask, jsonify, request, session, redirect, send_from_directory
+from flask_cors import CORS
+from gmail_oauth import GmailOAuthManager
+from google.auth.transport.requests import Request
+from email_summarizer import EmailSummarizer
+import secrets
+from email_agent_service import generate_email_from_description
+from info_extractor import EmailMediator
+from werkzeug.middleware.proxy_fix import ProxyFix
+import os
+import tempfile
+from transcriber import transcribe
+import base64
+from email.mime.text import MIMEText
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
-const API_BASE = process.env.REACT_APP_API_BASE || '';
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
-const GmailComposeApp = () => {
-  const activeLabelRef = useRef('INBOX');
-  // Authentication
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isAuthChecking, setIsAuthChecking] = useState(true);
-  const [userEmail, setUserEmail] = useState('');
-  const [userAvatar, setUserAvatar] = useState('');
-  const [status, setStatus] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+from apscheduler.schedulers.background import BackgroundScheduler
+from dateutil import parser
+from datetime import datetime, timedelta
+import time
+import threading
+import pytz
 
-  // --- NEW SEARCH STATE ---
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
-  // Compose Fields
-  const [toField, setToField] = useState('');
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
-  const [suggestions, setSuggestions] = useState([]);
-  const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [activeField, setActiveField] = useState(null);
-  const [summary, setSummary] = useState('');
-  const [isSummarizing, setIsSummarizing] = useState(false);
-  const [showSummary, setShowSummary] = useState(false);
+from flask import send_file
+import io
 
-  // Views
-  const [currentView, setCurrentView] = useState('inbox');
-  const [showCompose, setShowCompose] = useState(false);
-  
-  // Messages
-  const [messages, setMessages] = useState([]);
-  const [selectedMessage, setSelectedMessage] = useState(null);
-  const [loadingMessages, setLoadingMessages] = useState(false);
-  const [nextPageToken, setNextPageToken] = useState(null);
-  const [messageCache, setMessageCache] = useState({});
-
-  // Reply
-  const [showReplyMenu, setShowReplyMenu] = useState(false);
-  const [inlineReplyOpen, setInlineReplyOpen] = useState(false);
-  const [replyBody, setReplyBody] = useState('');
-  const [ccField, setCcField] = useState('');
-  const [bccField, setBccField] = useState('');
-  const [showCcBcc, setShowCcBcc] = useState(false);
-  const [mediatorState, setMediatorState] = useState(null);
-  const [prevMediatorState, setPrevMediatorState] = useState(null);
-  const [emailGenerated, setEmailGenerated] = useState(false);
-  const [composeContext, setComposeContext] = useState(null);
-  const [aiMode, setAiMode] = useState('voice'); 
-  const [aiInstruction, setAiInstruction] = useState('');
-  const [isAiProcessing, setIsAiProcessing] = useState(false);
-  const [showMobileAiMenu, setShowMobileAiMenu] = useState(false);
-  const [showMobileTextInput, setShowMobileTextInput] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const mediaRecorderRef = useRef(null);
-  const streamRef = useRef(null);
-  const audioChunksRef = useRef([]);
-  const [attachments, setAttachments] = useState([]);
-  const fileInputRef = useRef(null);
-  const [scheduleTime, setScheduleTime] = useState('');
-  const [showScheduleInput, setShowScheduleInput] = useState(false);
-
-  const avatarColors = [
-    'bg-red-100 text-red-600', 'bg-orange-100 text-orange-600', 'bg-amber-100 text-amber-600',
-    'bg-yellow-100 text-yellow-600', 'bg-lime-100 text-lime-600', 'bg-green-100 text-green-600',
-    'bg-emerald-100 text-emerald-600', 'bg-teal-100 text-teal-600', 'bg-cyan-100 text-cyan-600',
-    'bg-sky-100 text-sky-600', 'bg-blue-100 text-blue-600', 'bg-indigo-100 text-indigo-600',
-    'bg-violet-100 text-violet-600', 'bg-purple-100 text-purple-600', 'bg-fuchsia-100 text-fuchsia-600',
-    'bg-pink-100 text-pink-600', 'bg-rose-100 text-rose-600'
-  ];
-
-  // ... Utility functions (extractSenderName, getAvatarData, formatDate, handleDownload, etc) ...
-  const extractSenderName = (fromString) => {
-    const match = fromString && fromString.match(/^([^<]+)</);
-    return match ? match[1].trim() : (fromString ? fromString.split('<')[0].trim() : '');
-  };
-  const getAvatarData = (name) => {
-    const cleanName = name || '?';
-    const charCode = cleanName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const colorClass = avatarColors[charCode % avatarColors.length];
-    const initial = cleanName.charAt(0).toUpperCase();
-    return { colorClass, initial };
-  };
-  const formatDate = (dateString) => {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffTime = Math.abs(now - date);
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    if (diffDays === 0) return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    else if (diffDays === 1) return 'Yesterday';
-    else if (diffDays < 7) return date.toLocaleDateString('en-US', { weekday: 'short' });
-    else return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
-  const handleDownload = async (messageId, attachmentId, filename) => {
-     try {
-      const response = await fetch(`${API_BASE}/email/attachment?messageId=${messageId}&attachmentId=${attachmentId}&filename=${encodeURIComponent(filename)}`, {
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Download failed');
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-    } catch (error) {
-      console.error("Download error:", error);
-      alert("Failed to download attachment");
-    }
-  };
-  const getLastTerm = (text) => { if (!text) return ''; const parts = text.split(','); return parts[parts.length - 1].trim(); };
-  const stripHtml = (html) => { const tmp = document.createElement("DIV"); tmp.innerHTML = html; return tmp.textContent || tmp.innerText || ""; };
-  const replaceLastTerm = (text, newEmail) => { const parts = text.split(','); parts.pop(); parts.push(' ' + newEmail); return parts.map(p => p.trim()).filter(p => p).join(', ') + ', '; };
-  const pushInboxState = useCallback((replace = false, view = 'inbox') => {
-    const state = { view: view };
-    const url = window.location.pathname + '#' + view;
-    if (replace) window.history.replaceState(state, '', url);
-    else window.history.pushState(state, '', url);
-  }, []);
+from google_auth_web import (
+    build_flow,
+    credentials_to_dict,
+    get_gmail_service_from_session
+)
 
 
-  const loadInbox = useCallback(async (pageToken = null, label = 'INBOX', query = null, useCache = false) => {
-    setLoadingMessages(true);
-
-    // 1. CACHE CHECK
-    // Only use cache if requested, we are on page 1 (no pageToken), and not searching
-    if (useCache && !pageToken && !query && messageCache[label]) {
-        console.log(`Loading ${label} from cache`);
-        setMessages(messageCache[label].messages);
-        setNextPageToken(messageCache[label].nextPageToken);
-        setLoadingMessages(false);
-        return; 
-    }
-
-    try {
-      let url;
-      
-      if (query) {
-        url = pageToken 
-          ? `${API_BASE}/inbox/messages?pageToken=${pageToken}&q=${encodeURIComponent(query)}`
-          : `${API_BASE}/inbox/messages?q=${encodeURIComponent(query)}`;
-      } 
-      else if (label === 'SCHEDULED') {
-        url = `${API_BASE}/scheduled/messages`;
-      } 
-      else {
-        url = pageToken 
-          ? `${API_BASE}/inbox/messages?pageToken=${pageToken}&label=${label}` 
-          : `${API_BASE}/inbox/messages?label=${label}`;
-      }
+if not firebase_admin._apps:
+    if os.environ.get('FIREBASE_CREDENTIALS'):
+        cred_dict = json.loads(os.environ.get('FIREBASE_CREDENTIALS'))
+        cred = credentials.Certificate(cred_dict)
+    else:
+        cred = credentials.Certificate('firebase_credentials.json')
         
-      const response = await fetch(url, { credentials: 'include' });
-      const data = await response.json();
+    firebase_admin.initialize_app(cred)
 
-      if (!query && activeLabelRef.current !== label) {
-          console.log(`Ignoring stale ${label} data, user is now on ${activeLabelRef.current}`);
-          return; // STOP! Do not update state.
-      }
-      
-      if (data.success) {
-        const newMessages = pageToken ? (messages) => [...messages, ...data.messages] : data.messages;
+# Global variable to hold the client for this specific worker process
+_db_client = None
+
+def get_db():
+    """Lazily initialize Firestore client to avoid gRPC fork issues"""
+    global _db_client
+    if _db_client is None:
+        _db_client = firestore.client()
+    return _db_client
+
+scheduler = BackgroundScheduler(timezone=pytz.utc)
+scheduler.start()
+
+# BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# FRONTEND_BUILD_DIR = os.path.join(BASE_DIR, "frontend", "build")
+
+# app = Flask(
+#     __name__,
+#     static_folder=os.path.join(FRONTEND_BUILD_DIR, "static"),
+#     static_url_path="/static"
+# )
+
+# @app.route("/", defaults={"path": ""})
+# @app.route("/<path:path>")
+# def serve_react_app(path):
+#     if path.startswith("api"):
+#         return jsonify({"error": "Not found"}), 404
+
+#     return send_from_directory(FRONTEND_BUILD_DIR, "index.html")
+app = Flask(__name__)
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
+# app.secret_key =  secrets.token_hex(16)
+
+
+app.config.update(
+    SESSION_COOKIE_SAMESITE="None",
+    SESSION_COOKIE_SECURE=True,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30)
+)
+
+
+app.wsgi_app = ProxyFix(
+    app.wsgi_app,
+    x_proto=1,
+    x_host=1
+)
+
+
+# Configure CORS properly
+# CORS(
+#     app,
+#     origins=[
+#         "http://localhost:3000", 
+#         "http://192.168.0.102:3000"
+#         ],
+#     supports_credentials=True
+# )
+
+CORS(
+    app,
+    origins=[
+        "http://localhost:3000",
+        "https://auag-assistant.vercel.app"
+    ],
+    supports_credentials=True
+)
+
+mediators = {}
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({'status': 'ok'})
+
+
+@app.route("/auth/google/callback", methods=["GET"])
+def google_callback():
+    try:
+        flow = build_flow()
         
-        // 2. UPDATE STATE
-        setMessages(prev => pageToken ? [...prev, ...data.messages] : data.messages);
-        setNextPageToken(data.nextPageToken);
+        # Disable strict scope checking for openid
+        os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
+        
+        flow.fetch_token(authorization_response=request.url)
 
-        // 3. SAVE TO CACHE (Only if not searching and not paging)
-        if (!query && !pageToken) {
-            setMessageCache(prev => ({
-                ...prev,
-                [label]: { 
-                    messages: data.messages, 
-                    nextPageToken: data.nextPageToken 
+        creds = flow.credentials
+        session.permanent = True
+        session["google_creds"] = credentials_to_dict(creds)
+        
+        try:
+            user_info_service = build('oauth2', 'v2', credentials=creds)
+            user_info = user_info_service.userinfo().get().execute()
+            
+            email = user_info.get('email')
+            name = user_info.get('name', 'Unknown')
+            picture = user_info.get('picture', '')
+
+            # Save to Firebase
+            if get_db():
+                user_ref = get_db().collection('users').document(email)
+
+                doc_snap = user_ref.get()
+                
+                user_data = {
+                    'email': email,
+                    'name': name,
+                    'picture': picture,
+                    'last_seen': firestore.SERVER_TIMESTAMP,
                 }
-            }));
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load messages:', error);
-      setStatus('Failed to load messages');
-    } finally {
-      if (query || activeLabelRef.current === label) {
-           setLoadingMessages(false);
-       }
-    }
-  }, [messageCache]); // Add messageCache to dependencies
 
-  const checkAuthStatus = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/auth/status`, { credentials: 'include' });
-      const data = await response.json();
-      setIsAuthenticated(Boolean(data.authenticated));
-      if (data.email) setUserEmail(data.email);
-      if (data.picture) setUserAvatar(data.picture);
-      if (data.authenticated) {
-        const hash = window.location.hash;
-        if (hash.startsWith('#message-')) {
-            // Optional: You could ensure currentView is set to 'message' here
-            // but usually we just want to let the existing state persist
-            return; 
-        }
-        if (hash === '#sent') { setCurrentView('sent'); loadInbox(null, 'SENT'); }
-        else if (hash === '#scheduled') { setCurrentView('scheduled'); loadInbox(null, 'SCHEDULED'); }
-        else if (hash === '#spam') { setCurrentView('spam'); loadInbox(null, 'SPAM'); }
-        else { setCurrentView('inbox'); loadInbox(null, 'INBOX'); }
-      }
-    } catch (error) {
-      console.error('Auth check failed:', error);
-    }
-    finally {
-      setIsAuthChecking(false);
-    }
-  }, [loadInbox]);
+                if not doc_snap.exists:
+                    user_data['relations'] = {} 
 
-  const loadMessageDetail = useCallback(async (messageId, pushHistory = true) => {
-    setSummary(''); 
-    setShowSummary(false);
-    setIsSummarizing(false);
-    try {
-      const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, { credentials: 'include' });
-      const data = await response.json();
-      if (data.success) {
-        const attachments = extractAttachments(data.message.payload);
-        const complete = { ...data.message, threadId: data.message.threadId || data.message.id, attachments: attachments };
-        setSelectedMessage(complete);
-        setCurrentView('message');
-        setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, isUnread: false, attachments: attachments } : msg));
-        if (pushHistory) {
-          window.history.pushState({ view: 'message', messageId }, '', `${window.location.pathname}#message-${messageId}`);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load message:', error);
-    }
-  }, []);
+                user_ref.set(user_data, merge=True)
+            
+            # Cache in session for quick access
+            session['user_info'] = {
+                'email': email,
+                'name': name,
+                'picture': picture
+            }
+                
+        except Exception as e:
+            print(f"Error fetching/storing user info: {e}")
 
-  // ... File/Attachment/Effect helpers same as before ...
-  const handleFileSelect = (e) => { if (e.target.files && e.target.files.length > 0) { setAttachments(prev => [...prev, ...Array.from(e.target.files)]); } };
-  const removeAttachment = (indexToRemove) => { setAttachments(prev => prev.filter((_, index) => index !== indexToRemove)); };
-  const clearAttachments = () => { setAttachments([]); if (fileInputRef.current) fileInputRef.current.value = ""; };
-  const extractAttachments = (payload) => {
-    if (!payload) return [];
-    let attachments = [];
-    const traverse = (parts) => {
-      if (!parts) return;
-      parts.forEach(part => {
-        if (part.filename && part.body && part.body.attachmentId) { attachments.push({ filename: part.filename, mimeType: part.mimeType, size: part.body.size, attachmentId: part.body.attachmentId }); }
-        if (part.parts) traverse(part.parts);
-      });
-    };
-    if (payload.parts) traverse(payload.parts);
-    return attachments;
-  };
-
-  useEffect(() => { checkAuthStatus(); }, [checkAuthStatus]);
-
-  const handleNavigation = (view) => {
-    setCurrentView(view);
-    setShowCompose(false);
-    setSelectedMessage(null);
-    setIsMobileMenuOpen(false);
-    
-    setSearchQuery('');
-    setIsSearching(false);
-
-    // --- KEY FIX: Clear messages immediately so old content doesn't show ---
-    setMessages([]); 
-    setLoadingMessages(true);
-    // ---------------------------------------------------------------------
-
-    pushInboxState(false, view);
-
-    // Determine label and load with Cache enabled
-    let label = 'INBOX';
-    if (view === 'sent') label = 'SENT';
-    else if (view === 'scheduled') label = 'SCHEDULED';
-    else if (view === 'spam') label = 'SPAM';
-
-    // Pass 'true' as the 4th argument to enable caching
-    activeLabelRef.current = label;
-    // -----------------------
-
-    setMessages([]); // Clear old messages
-    setLoadingMessages(true);
-    pushInboxState(false, view);
-    
-    // Pass true for cache
-    loadInbox(null, label, null, true);
-  };
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    let mounted = true;
-    const interval = setInterval(async () => {
-        try {
-            const response = await fetch(`${API_BASE}/mediator/state`, { credentials: 'include' });
-            const newState = await response.json();
-            if (!mounted) return;
-            setMediatorState(prev => { setPrevMediatorState(prev); return newState; });
-        } catch (err) { console.error('Mediator polling failed', err); }
-    }, 1000);
-    return () => { mounted = false; clearInterval(interval); };
-  }, [isAuthenticated]);
-  useEffect(() => {
-    if (!mediatorState || !prevMediatorState) return;
-    if (mediatorState.recipient_name && mediatorState.recipient_name !== prevMediatorState.recipient_name && mediatorState.recipient_name !== toField) { setToField(mediatorState.recipient_name); }
-    const prevCc = JSON.stringify(prevMediatorState.cc || []); const newCc = JSON.stringify(mediatorState.cc || []);
-    if (newCc !== prevCc && Array.isArray(mediatorState.cc) && mediatorState.cc.length > 0) { const emails = mediatorState.cc.join(', ') + ', '; setCcField(prev => { const c = prev ? prev.trim() : ''; return c ? (c.endsWith(',') ? `${c} ${emails}` : `${c}, ${emails}`) : emails; }); setShowCcBcc(true); }
-    const prevBcc = JSON.stringify(prevMediatorState.bcc || []); const newBcc = JSON.stringify(mediatorState.bcc || []);
-    if (newBcc !== prevBcc && Array.isArray(mediatorState.bcc) && mediatorState.bcc.length > 0) { const emails = mediatorState.bcc.join(', ') + ', '; setBccField(prev => { const c = prev ? prev.trim() : ''; return c ? (c.endsWith(',') ? `${c} ${emails}` : `${c}, ${emails}`) : emails; }); setShowCcBcc(true); }
-    if (mediatorState.description && mediatorState.description !== prevMediatorState.description) { setEmailGenerated(false); }
-  }, [mediatorState, prevMediatorState, toField]);
-  useEffect(() => { if (!showCompose) return; const loadComposeContext = async () => { try { const response = await fetch(`${API_BASE}/compose/context`, { credentials: 'include' }); const data = await response.json(); if (data.recipient_name) setToField(data.recipient_name); setComposeContext(data); } catch (err) { console.error('Failed to load compose context', err); } }; loadComposeContext(); }, [showCompose]);
-  useEffect(() => { if (!showCompose || emailGenerated || !mediatorState || !mediatorState.description) return; const generateEmail = async () => { setLoading(true); setStatus('Generating email...'); try { const response = await fetch(`${API_BASE}/email/generate`, { method: 'POST', credentials: 'include' }); const data = await response.json(); if (data.success) { setSubject(data.subject); setBody(data.body); setEmailGenerated(true); } } catch (err) { console.error(err); } finally { setLoading(false); setStatus(''); } }; generateEmail(); }, [showCompose, mediatorState, emailGenerated]);
-
-  useEffect(() => {
-    const onPopState = (event) => {
-      const state = event.state;
-      const hash = window.location.hash;
-      if (!state) {
-        if (hash === '#sent') { handleNavigation('sent'); }
-        else if (hash === '#scheduled') { handleNavigation('scheduled'); }
-        else if (hash === '#spam') { handleNavigation('spam'); }
-        else if (hash === '#compose') { setShowCompose(true); setCurrentView('compose'); }
-        else { handleNavigation('inbox'); }
-        return;
-      }
-      if (state.view === 'inbox' || state.view === 'sent' || state.view === 'scheduled' || state.view === 'spam') {
-        setCurrentView(state.view); setShowCompose(false); setSelectedMessage(null);
-        if (state.view === 'inbox') loadInbox(null, 'INBOX');
-        else if (state.view === 'sent') loadInbox(null, 'SENT');
-        else if (state.view === 'scheduled') loadInbox(null, 'SCHEDULED');
-        else if (state.view === 'spam') loadInbox(null, 'SPAM');
-      } 
-    };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, [loadInbox]);
-
-  useEffect(() => {
-    let currentText = ''; if (activeField === 'to') currentText = toField; else if (activeField === 'cc') currentText = ccField; else if (activeField === 'bcc') currentText = bccField; const term = getLastTerm(currentText);
-    if (!activeField || term.length < 2) { setSuggestions([]); return; } const controller = new AbortController(); const searchContacts = async () => { try { const response = await fetch(`${API_BASE}/contacts/search?q=${encodeURIComponent(term)}`, { credentials: 'include', signal: controller.signal }); const data = await response.json(); setSuggestions(data.contacts || []); setSelectedIndex(-1); } catch (error) { if (error.name !== 'AbortError') console.error('Contact search failed:', error); } }; const id = setTimeout(searchContacts, 300); return () => { clearTimeout(id); controller.abort(); };
-  }, [toField, ccField, bccField, activeField]);
-  const handleKeyDown = (e, fieldType) => { if (activeField !== fieldType || suggestions.length === 0) return; if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIndex(prev => (prev < suggestions.length - 1 ? prev + 1 : prev)); } else if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedIndex(prev => (prev > 0 ? prev - 1 : -1)); } else if (e.key === 'Enter' && selectedIndex >= 0) { e.preventDefault(); selectSuggestion(suggestions[selectedIndex]); } };
-  const selectSuggestion = (contact) => { if (activeField === 'to') setToField(prev => replaceLastTerm(prev, contact.email)); else if (activeField === 'cc') setCcField(prev => replaceLastTerm(prev, contact.email)); else if (activeField === 'bcc') setBccField(prev => replaceLastTerm(prev, contact.email)); setSuggestions([]); setSelectedIndex(-1); };
-  const handleBlur = () => { setTimeout(() => { setActiveField(null); setSuggestions([]); }, 200); };
-  const handleAuth = () => { setStatus('Redirecting...'); window.location.href = `${API_BASE}/auth/google/login`; };
-  const handleLogout = async () => { try { await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }); setIsAuthenticated(false); setUserEmail(''); setShowCompose(false); setStatus('Logged out'); setTimeout(() => setStatus(''), 2000); pushInboxState(true); } catch (error) { console.error('Logout failed:', error); } };
-  const handleSummarize = async () => { if (!selectedMessage) return; setIsSummarizing(true); try { const bodyText = selectedMessage.isHtml ? stripHtml(selectedMessage.body) : selectedMessage.body; const textToSummarize = `Subject: ${selectedMessage.subject}\n\n${bodyText}`; const response = await fetch(`${API_BASE}/email/summarize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ text: textToSummarize }) }); const data = await response.json(); if (data.success) { setSummary(data.summary); setShowSummary(true); } else { setStatus('Failed to generate summary'); setTimeout(() => setStatus(''), 2000); } } catch (error) { console.error('Summarize failed:', error); setStatus('Error summarizing'); setTimeout(() => setStatus(''), 2000); } finally { setIsSummarizing(false); } };
-  const handleCompose = () => { setShowCompose(true); setCurrentView('compose'); setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); setAiInstruction(''); setAiMode('voice'); setShowMobileAiMenu(false); setShowMobileTextInput(false); setIsMobileMenuOpen(false); window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose'); };
-  const handleReplyNew = () => { setShowReplyMenu(false); if (!selectedMessage) return; const emailMatch = selectedMessage.from.match(/<([^>]+)>/); const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from; setToField(replyToEmail); setSubject(selectedMessage.subject || ''); setBody(''); setAiInstruction(''); setAiMode('voice'); setShowMobileAiMenu(false); setShowMobileTextInput(false); setShowCompose(true); setCurrentView('compose'); window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose'); };
-  const handleReplyClick = () => setShowReplyMenu(true);
-  const handleReplyThread = () => { setShowReplyMenu(false); setInlineReplyOpen(true); setTimeout(() => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }, 100); };
-  const sendInlineReply = async () => { if (!replyBody.trim() || !selectedMessage) return; setLoading(true); setStatus('Sending reply...'); try { const emailMatch = selectedMessage.from.match(/<([^>]+)>/); const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from; const formData = new FormData(); formData.append('to', replyToEmail); formData.append('subject', selectedMessage.subject); formData.append('body', replyBody); formData.append('threadId', selectedMessage.threadId); formData.append('messageId', selectedMessage.id); attachments.forEach((file) => formData.append('attachments', file)); const response = await fetch(`${API_BASE}/email/send`, { method: 'POST', credentials: 'include', body: formData }); const data = await response.json(); if (data.success) { setStatus('Reply sent!'); setReplyBody(''); setAttachments([]); setInlineReplyOpen(false); } else { setStatus('Failed: ' + (data.error || 'unknown')); } } catch (error) { console.error(error); setStatus('Error: ' + error.message); } finally { setLoading(false); setTimeout(() => setStatus(''), 2000); } };
-  const handleSend = async () => { if (!toField || !subject) { setStatus('Please fill in recipient and subject'); setTimeout(() => setStatus(''), 2000); return; } setLoading(true); setStatus(scheduleTime ? 'Scheduling email...' : 'Sending email...'); try { const formData = new FormData(); formData.append('to', toField); formData.append('subject', subject); formData.append('body', body); if (ccField) formData.append('cc', ccField); if (bccField) formData.append('bcc', bccField); attachments.forEach((file) => formData.append('attachments', file)); if (scheduleTime) { formData.append('scheduledTime', new Date(scheduleTime).toISOString()); } const response = await fetch(`${API_BASE}/email/send`, { method: 'POST', credentials: 'include', body: formData }); const data = await response.json(); if (data.success) { setStatus(data.scheduled ? 'Email successfully scheduled!' : 'Email sent successfully!'); setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); 
-    setMessageCache(prev => {
-        const newCache = { ...prev };
-        delete newCache['SENT']; 
-        return newCache;
-    });
-    setAttachments([]); setScheduleTime(''); setShowScheduleInput(false); if (fileInputRef.current) fileInputRef.current.value = ""; setShowCompose(false); handleNavigation('inbox'); } else { setStatus('Failed: ' + (data.error || 'unknown')); } } catch (error) { console.error(error); setStatus('Error: ' + error.message); } finally { setLoading(false); setTimeout(() => setStatus(''), 3000); } };
-  const handleAudioToggle = async () => { setShowMobileTextInput(false); if (!isRecording) { try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); streamRef.current = stream; const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' }); audioChunksRef.current = []; mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunksRef.current.push(event.data); }; mediaRecorder.onstop = async () => { const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' }); const formData = new FormData(); formData.append('audio', audioBlob, 'recording.webm'); setIsAiProcessing(true); try { const response = await fetch(`${API_BASE}/audio/transcribe`, { method: 'POST', credentials: 'include', body: formData }); const data = await response.json(); if (data.success) { await fetch(`${API_BASE}/mediator/advance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ input: data.text }) }); } } catch (err) { console.error('Transcription failed', err); } finally { setIsAiProcessing(false); } }; mediaRecorder.start(); mediaRecorderRef.current = mediaRecorder; setIsRecording(true); } catch (err) { console.error('Failed to get audio', err); } } else { if (mediaRecorderRef.current) mediaRecorderRef.current.stop(); if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); mediaRecorderRef.current = null; streamRef.current = null; setIsRecording(false); } };
-  const handleAiTextSubmit = async () => { if (!aiInstruction.trim()) return; setIsAiProcessing(true); if (showMobileTextInput) setShowMobileTextInput(false); try { await fetch(`${API_BASE}/mediator/advance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ input: aiInstruction }) }); setAiInstruction(''); } catch (err) { console.error('Text submission failed', err); } finally { setIsAiProcessing(false); } };
-  const handleMobileFabClick = () => { if (isRecording) handleAudioToggle(); else if (showMobileTextInput) setShowMobileTextInput(false); else setShowMobileAiMenu(prev => !prev); };
-
-  const handleSearchSubmit = (e) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
-    
-    setIsSearching(true);
-    // Reset view to 'search' conceptually (we'll just use currentView to render list, but data is from search)
-    // We can keep currentView as is or switch to 'inbox' to show the list component
-    // Let's just reload inbox with query
-    loadInbox(null, null, searchQuery); 
-  };
-
-  const clearSearch = () => {
-    setSearchQuery('');
-    setIsSearching(false);
-    handleNavigation('inbox');
-  };
-
-  const renderSuggestions = (fieldType) => { if (activeField !== fieldType || suggestions.length === 0) return null; return ( <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto"> {suggestions.map((contact, index) => ( <div key={contact.email} onMouseDown={(e) => { e.preventDefault(); selectSuggestion(contact); }} className={`px-4 py-3 cursor-pointer transition-all duration-150 border-b last:border-0 ${index === selectedIndex ? 'bg-gradient-to-r from-violet-50 to-purple-50 border-l-4 border-violet-500' : 'hover:bg-slate-50'}`}> <div className="font-semibold text-slate-800">{contact.name}</div> <div className="text-sm text-slate-500">{contact.email}</div> </div> ))} </div> ); };
-
-  if (isAuthChecking) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="animate-pulse flex flex-col items-center">
-          <div className="p-4 bg-violet-100 rounded-2xl mb-4">
-             <Mail className="w-8 h-8 text-violet-600" />
-          </div>
-          <div className="h-4 w-32 bg-slate-200 rounded"></div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!isAuthenticated) return (
-    <div className="min-h-screen bg-gradient-to-br from-violet-100 via-purple-50 to-fuchsia-100 flex items-center justify-center p-4">
-      <div className="bg-white/80 backdrop-blur-xl rounded-2xl shadow-2xl p-8 sm:p-10 max-w-md w-full mx-auto border border-white/20">
-        <div className="text-center mb-8">
-          <div className="inline-block p-5 bg-gradient-to-br from-violet-500 to-purple-600 rounded-2xl mb-5 shadow-lg"><Mail className="w-12 h-12 text-white" /></div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent mb-2">Echo Mail</h1>
-          <p className="text-slate-600">Connect your Google account to get started</p>
-        </div>
-        <button onClick={handleAuth} disabled={loading} className="w-full bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white font-semibold py-4 px-6 rounded-xl transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-3">Sign in with Google</button>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden relative">
-      
-      {/* --- MOBILE OVERLAY BACKDROP --- */}
-      {isMobileMenuOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-40 md:hidden animate-in fade-in duration-200" 
-          onClick={() => setIsMobileMenuOpen(false)}
-        />
-      )}
-
-      {/* --- SIDEBAR --- */}
-      <aside className={`
-          fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 ease-in-out flex flex-col h-full
-          md:translate-x-0 md:static
-          ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
-      `}>
-        {/* Logo Area */}
-        <div className="p-6 flex items-center justify-between border-b border-slate-100">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl shadow-md">
-              <Mail className="w-5 h-5 text-white" />
-            </div>
-            <h1 className="text-xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent">Echo Mail</h1>
-          </div>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden p-1 text-slate-400 hover:bg-slate-100 rounded-lg">
-             <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Compose Button */}
-        <div className="p-4">
-          <button 
-            onClick={handleCompose} 
-            className="w-full bg-violet-50 hover:bg-violet-100 text-violet-700 font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-colors border border-violet-100 shadow-sm"
-          >
-            <Plus className="w-5 h-5" />
-            <span>Compose</span>
-          </button>
-        </div>
-
-        {/* Navigation Links */}
-        <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
-          <button 
-            onClick={() => handleNavigation('inbox')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'inbox' && !isSearching ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
-          >
-            <Inbox className="w-5 h-5" /> Inbox
-          </button>
-          <button 
-            onClick={() => handleNavigation('sent')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'sent' && !isSearching ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
-          >
-            <Send className="w-5 h-5" /> Sent
-          </button>
-          <button 
-            onClick={() => handleNavigation('scheduled')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'scheduled' && !isSearching ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
-          >
-            <Clock className="w-5 h-5" /> Scheduled
-          </button>
-          <button 
-            onClick={() => handleNavigation('spam')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${currentView === 'spam' && !isSearching ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
-          >
-            <OctagonAlert className="w-5 h-5" /> Spam
-          </button>
-        </nav>
-
-        {/* User Profile */}
-        <div className="p-4 border-t border-slate-200">
-           <div className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-50 cursor-pointer group relative">
-              <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden">
-                {userAvatar ? <img src={userAvatar} alt="User" className="w-full h-full object-cover"/> : <User className="w-5 h-5 text-slate-500" />}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-slate-800 truncate">{userEmail}</p>
-                <div onClick={handleLogout} className="flex items-center gap-1 text-xs text-red-500 font-medium hover:underline mt-0.5">
-                   <LogOut className="w-3 h-3" /> Logout
-                </div>
-              </div>
-           </div>
-        </div>
-      </aside>
-
-      {/* --- MAIN CONTENT AREA --- */}
-      <main className="flex-1 flex flex-col h-full w-full relative">
+        return redirect("https://auag-assistant.vercel.app")
         
-        {/* Mobile Header */}
-        <header className="md:hidden bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 py-3 sticky top-0 z-20 flex items-center gap-4">
-          <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600">
-             <Menu className="w-6 h-6" />
-          </button>
-          <div className="flex items-center gap-2">
-             <div className="p-1.5 bg-gradient-to-br from-violet-500 to-purple-600 rounded-lg"><Mail className="w-4 h-4 text-white" /></div>
-             <span className="font-bold text-slate-800">Echo Mail</span>
-          </div>
-        </header>
+    except Exception as e:
+        print(f"OAuth Callback Error: {e}")
+        return jsonify({'error': 'Authentication failed', 'details': str(e)}), 500
+    
 
-        {/* Status Notification */}
-        {status && (
-          <div className="absolute top-16 md:top-4 left-1/2 transform -translate-x-1/2 z-50 animate-in slide-in-from-top-4 fade-in duration-300">
-            <div className="px-4 py-2 bg-slate-800 text-white rounded-full shadow-xl flex items-center gap-2 text-sm font-medium">
-              <Check className="w-4 h-4 text-emerald-400" />
-              {status}
-            </div>
-          </div>
-        )}
+@app.route('/api/auth/status', methods=['GET'])
+def auth_status():
+    if 'google_creds' not in session:
+        return jsonify({'authenticated': False})
 
-        {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto bg-slate-50">
-          
-          {/* List Views */}
-          {(currentView === 'inbox' || currentView === 'sent' || currentView === 'scheduled' || currentView === 'spam') && (
-             <div className="max-w-4xl mx-auto p-4 md:p-8 pb-24 md:pb-8">
+    try:
+        creds_data = session['google_creds']
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        user_info_service = build('oauth2', 'v2', credentials=creds)
+        user_info = user_info_service.userinfo().get().execute()
+        
+        email = user_info.get('email')
+        name = user_info.get('name', 'Unknown')
+        picture = user_info.get('picture', '')
+
+        return jsonify({
+            'authenticated': True, 
+            'email': email,
+            'name': name,
+            'picture': picture
+        })
+
+    except Exception as e:
+        print(f"Auth Status Check Error: {e}")
+        session.pop('google_creds', None)
+        return jsonify({'authenticated': False, 'error': str(e)})
+
+
+
+
+@app.route("/api/auth/google/login")
+def google_login():
+    flow = build_flow()
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent"
+    )
+    session["oauth_state"] = state
+    return redirect(auth_url)
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"success": True})
+
+
+@app.route('/api/contacts/search', methods=['GET'])
+def search_contacts():
+    try:
+        query = request.args.get('q', '').strip()
+
+        if len(query) < 2:
+            return jsonify({'contacts': []})
+
+        service = get_gmail_service_from_session()
+        if not service:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        creds = service._http.credentials
+
+        google_contacts = GmailOAuthManager.search_contacts_with_creds(creds, query)
+        
+        user_email = get_current_user_email()
+        relation_contacts = []
+        
+        if user_email and get_db():
+            try:
+                user_ref = get_db().collection('users').document(user_email)
+                user_doc = user_ref.get()
                 
-                {/* --- HEADER & SEARCH BAR --- */}
-                <div className="flex flex-col md:flex-row md:items-center gap-4 mb-6">
-                  {/* Title (Hidden on search to save space on mobile, or keep it) */}
-                  <h2 className="text-2xl font-bold text-slate-800 capitalize md:w-32">
-                    {isSearching ? 'Results' : currentView}
-                  </h2>
-
-                  {/* Search Bar Input */}
-                  <form onSubmit={handleSearchSubmit} className="flex-1 relative">
-                    <div className="relative group">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Search className="h-5 w-5 text-slate-400 group-focus-within:text-violet-500 transition-colors" />
-                      </div>
-                      <input 
-                        type="text" 
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search mail..." 
-                        className="block w-full pl-10 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl leading-5 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition-shadow shadow-sm"
-                      />
-                      {searchQuery && (
-                        <button type="button" onClick={clearSearch} className="absolute inset-y-0 right-0 pr-3 flex items-center">
-                          <X className="h-4 w-4 text-slate-400 hover:text-slate-600" />
-                        </button>
-                      )}
-                    </div>
-                  </form>
-
-                  <button 
-                    onClick={() => {
-                        // Clear cache for current view to force reload
-                        const label = currentView === 'sent' ? 'SENT' : currentView === 'scheduled' ? 'SCHEDULED' : currentView === 'spam' ? 'SPAM' : 'INBOX';
-                        
-                        // Clear messages to show loading state
-                        if (!isSearching) setMessages([]); 
-                        
-                        if (isSearching) loadInbox(null, null, searchQuery, false); // Search doesn't use cache anyway
-                        else loadInbox(null, label, null, false); // Pass false to ignore cache
-                    }}
-                    disabled={loadingMessages} 
-                    className="p-2.5 bg-white border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-violet-600 rounded-xl shadow-sm transition-all self-end md:self-auto"
-                  >
-                    <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
-                  </button>
-                </div>
-
-                {/* Message List */}
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden divide-y divide-slate-100">
-                  {loadingMessages && messages.length === 0 ? (
-                    <div className="p-12 text-center text-slate-500">Loading...</div>
-                  ) : messages.length === 0 ? (
-                    <div className="p-12 text-center text-slate-500">
-                      {isSearching ? `No results found for "${searchQuery}"` : 'No messages found'}
-                    </div>
-                  ) : messages.map((message) => {
-                    const isSent = currentView === 'sent';
-                    const isScheduled = currentView === 'scheduled';
-                    const isSpam = currentView === 'spam';
+                if user_doc.exists:
+                    user_data = user_doc.to_dict()
+                    relations = user_data.get('relations', {})
                     
-                    const displayName = (isSent || isScheduled) ? extractSenderName(message.to) : extractSenderName(message.from);
-                    const displayLabel = (isSent || isScheduled) ? `To: ${displayName}` : displayName;
+                    query_lower = query.lower()
                     
-                    const { colorClass, initial } = getAvatarData(displayName);
+                    for relation, emails in relations.items():
+                        if query_lower in relation.lower():
+                            for email in emails:
+                                relation_contacts.append({
+                                    'name': f"{relation.capitalize()} - {email.split('@')[0]}",
+                                    'email': email,
+                                    'source': 'saved_relation'
+                                })
+                        else:
+                            for email in emails:
+                                if query_lower in email.lower():
+                                    relation_contacts.append({
+                                        'name': f"{relation.capitalize()} - {email.split('@')[0]}",
+                                        'email': email,
+                                        'source': 'saved_relation'
+                                    })
                     
-                    return (
-                      <div 
-                        key={message.id} 
-                        onClick={() => !isScheduled && loadMessageDetail(message.id)} 
-                        className={`w-full text-left p-4 hover:bg-slate-50 transition-all group flex items-start gap-4 ${message.isUnread ? 'bg-violet-50/50' : ''} ${!isScheduled ? 'cursor-pointer' : 'cursor-default'}`}
-                      >
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-base font-bold shadow-sm flex-shrink-0 ${colorClass}`}>
-                          {initial}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex justify-between items-baseline mb-1 gap-2">
-                            <span className={`font-semibold text-sm text-slate-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
-                               {displayLabel}
-                            </span>
-                            <div className={`flex items-center gap-1.5 text-xs flex-shrink-0 ${isScheduled ? 'text-emerald-600 font-bold bg-emerald-50 px-2 py-1 rounded-full' : (isSpam ? 'text-red-500 font-bold bg-red-50 px-2 py-1 rounded-full' : 'text-slate-500')}`}>
-                              {isSpam && <OctagonAlert className="w-3 h-3"/>}
-                              {!isSpam && <Clock className="w-3 h-3" />}
-                              <span>{isScheduled ? `Scheduled: ${formatDate(message.date)}` : (isSpam ? 'Spam' : formatDate(message.date))}</span>
-                            </div>
-                          </div>
-                          <div className={`text-sm mb-0.5 truncate ${message.isUnread ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>{message.subject}</div>
-                          <div className="text-sm text-slate-500 line-clamp-1">{message.snippet}</div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+            except Exception as e:
+                print(f"Error searching saved relations: {e}")
+        
+        all_contacts = []
+        seen_emails = set()
+        
+        for contact in relation_contacts:
+            if contact['email'] not in seen_emails:
+                all_contacts.append(contact)
+                seen_emails.add(contact['email'])
+        
+        for contact in google_contacts:
+            if contact['email'] not in seen_emails:
+                contact['source'] = 'google_contacts'
+                all_contacts.append(contact)
+                seen_emails.add(contact['email'])
+        
+        print(f"[CONTACT SEARCH] Query='{query}' | Google={len(google_contacts)} | Relations={len(relation_contacts)} | Total={len(all_contacts)}")
+
+        return jsonify({'contacts': all_contacts})
+
+    except Exception as e:
+        print(f"[CONTACT SEARCH ERROR] Query='{query}' | Error={e}")
+        return jsonify({'error': 'Failed to search contacts'}), 500
+
+
+def get_current_user_email():
+    """Get current user's email from session"""
+    try:
+        if 'google_creds' not in session:
+            return None
+        
+        creds_data = session['google_creds']
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        user_info_service = build('oauth2', 'v2', credentials=creds)
+        user_info = user_info_service.userinfo().get().execute()
+        return user_info.get('email')
+        
+    except Exception as e:
+        print(f"Error fetching user email: {e}")
+        return None
+
+
+def save_email_relationship(user_email, recipient_email, relation):
+    """Save the relationship between user and recipient to Firebase"""
+    if not user_email or not recipient_email or not relation or not get_db():
+        return False
+    
+    try:
+        user_ref = get_db().collection('users').document(user_email)
+        user_doc = user_ref.get()
+        
+        if user_doc.exists:
+            user_data = user_doc.to_dict()
+            relations = user_data.get('relations', {})
+            
+            if relation not in relations:
+                relations[relation] = []
+            
+            if recipient_email not in relations[relation]:
+                relations[relation].append(recipient_email)
+            
+            user_ref.update({'relations': relations})
+            print(f"Saved relationship: {relation} -> {recipient_email} for user {user_email}")
+            return True
+        else:
+            print(f"User document not found for {user_email}")
+            return False
+            
+    except Exception as e:
+        print(f"Error saving relationship: {e}")
+        return False
+
+
+def get_email_by_relation(user_email, relation):
+    """Get list of emails for a given relation"""
+    if not user_email or not relation or not get_db():
+        return []
+    
+    try:
+        user_ref = get_db().collection('users').document(user_email)
+        user_doc = user_ref.get()
+        
+        if user_doc.exists:
+            user_data = user_doc.to_dict()
+            relations = user_data.get('relations', {})
+            
+            # Return list of emails for this relation (case-insensitive match)
+            for key, emails in relations.items():
+                if key.lower() == relation.lower():
+                    return emails
+            
+            return []
+        else:
+            return []
+            
+    except Exception as e:
+        print(f"Error fetching relationship: {e}")
+        return []
+
+
+def send_scheduled_draft_task(credentials_dict, draft_id):
+    """Background task to send a scheduled draft"""
+    print(f"\n{'='*80}")
+    print(f"🚀🚀🚀 SCHEDULED TASK TRIGGERED 🚀🚀🚀")
+    print(f"{'='*80}")
+    print(f"📧 Draft ID: {draft_id}")
+    print(f"⏰ Execution time: {datetime.now(pytz.UTC)}")
+    
+    try:
+        print(f"1️⃣ Reconstructing credentials...")
+        creds = Credentials(
+            token=credentials_dict['token'],
+            refresh_token=credentials_dict.get('refresh_token'),
+            token_uri=credentials_dict.get('token_uri'),
+            client_id=credentials_dict.get('client_id'),
+            client_secret=credentials_dict.get('client_secret'),
+            scopes=credentials_dict.get('scopes')
+        )
+        print(f"   ✅ Credentials OK")
+        
+        print(f"2️⃣ Building Gmail service...")
+        service = build('gmail', 'v1', credentials=creds)
+        print(f"   ✅ Service built")
+        
+        print(f"3️⃣ Sending draft {draft_id}...")
+        sent_message = service.users().drafts().send(
+            userId='me',
+            body={'id': draft_id}
+        ).execute()
+        
+        print(f"✅✅✅ SUCCESS! Email sent!")
+        print(f"   Message ID: {sent_message['id']}")
+        print(f"{'='*80}\n")
+        return True
+        
+    except Exception as e:
+        print(f"❌❌❌ TASK EXECUTION FAILED")
+        print(f"   Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print(f"{'='*80}\n")
+        raise 
+
+@app.route('/api/email/send', methods=['POST'])
+def send_email():
+    try:
+        service = get_gmail_service_from_session()
+        if not service:
+            return jsonify({'success': False, 'error': 'Auth required'}), 401
+
+        to_email = request.form.get('to')
+        subject = request.form.get('subject')
+        body_text = request.form.get('body')
+        thread_id = request.form.get('threadId')
+        reply_to_id = request.form.get('messageId')
+        scheduled_time_str = request.form.get('scheduledTime')
+        
+        uploaded_files = request.files.getlist('attachments')
+        
+        message = MIMEMultipart()
+        message['to'] = to_email
+        message['from'] = 'me'
+        message['subject'] = subject
+        message.attach(MIMEText(body_text, 'html'))
+
+        if uploaded_files:
+            for file in uploaded_files:
+                try:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(file.read())
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename="{file.filename}"')
+                    message.attach(part)
+                except Exception as e:
+                    print(f"Error attaching file {file.filename}: {e}")
+
+        if reply_to_id:
+            try:
+                original_msg = service.users().messages().get(
+                    userId='me', 
+                    id=reply_to_id, 
+                    format='metadata', 
+                    metadataHeaders=['Message-ID', 'References']
+                ).execute()
+                headers = original_msg.get('payload', {}).get('headers', [])
+                rfc_message_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), None)
+                if rfc_message_id:
+                    message['In-Reply-To'] = rfc_message_id
+                    message['References'] = rfc_message_id
+            except Exception as e:
+                print(f"Threading error: {e}")
+        
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+        body_payload = {'raw': raw_message}
+
+        if scheduled_time_str:
+            try:
+                draft_body = {'message': body_payload}
                 
-                {nextPageToken && currentView !== 'scheduled' && (
-                  <div className="py-6 text-center">
-                    <button 
-                      onClick={() => {
-                        if (isSearching) loadInbox(nextPageToken, null, searchQuery);
-                        else if (currentView === 'spam') loadInbox(nextPageToken, 'SPAM');
-                        else loadInbox(nextPageToken, currentView === 'sent' ? 'SENT' : 'INBOX');
-                      }} 
-                      disabled={loadingMessages} 
-                      className="text-slate-500 font-medium hover:text-violet-600 bg-white border border-slate-200 px-6 py-2 rounded-full shadow-sm"
-                    >
-                      Load More
-                    </button>
-                  </div>
-                )}
-             </div>
-          )}
+                draft = service.users().drafts().create(userId='me', body=draft_body).execute()
+                draft_id = draft['id']
 
-          {/* ... MESSAGE DETAIL VIEW & COMPOSE VIEW RENDER LOGIC REMAINS THE SAME ... */}
-          {currentView === 'message' && selectedMessage && (
-            <div className="p-4 md:p-8 max-w-4xl mx-auto h-full flex flex-col pb-24 md:pb-8">
-               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex-1 flex flex-col overflow-hidden">
-                 <div className="flex items-center justify-between p-4 border-b border-slate-100">
-                    <button onClick={() => { handleNavigation(window.location.hash.includes('spam') ? 'spam' : 'inbox'); pushInboxState(); }} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors">
-                      <ArrowLeft className="w-5 h-5" /> Back
-                    </button>
-                    <div className="flex gap-2">
-                       <button onClick={handleSummarize} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 font-medium text-sm">
-                          {isSummarizing ? <RefreshCw className="w-4 h-4 animate-spin"/> : <Sparkles className="w-4 h-4"/>} Summarize
-                       </button>
-                       <button onClick={handleReplyClick} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium text-sm">
-                          <Reply className="w-4 h-4" /> Reply
-                       </button>
-                    </div>
-                 </div>
-                 <div className="p-6 overflow-y-auto flex-1">
-                    <h2 className="text-2xl font-bold text-slate-900 mb-6">{selectedMessage.subject}</h2>
-                    <div className="flex gap-4 mb-6">
-                       <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold shadow-sm ${getAvatarData(extractSenderName(selectedMessage.from)).colorClass}`}>
-                          {getAvatarData(extractSenderName(selectedMessage.from)).initial}
-                       </div>
-                       <div>
-                          <p className="font-bold text-slate-900">{extractSenderName(selectedMessage.from)}</p>
-                          <p className="text-sm text-slate-500">{selectedMessage.from}</p>
-                          <p className="text-xs text-slate-400 mt-1">To: {selectedMessage.to}</p>
-                       </div>
-                    </div>
-                    {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
-                      <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {selectedMessage.attachments.map((att, index) => (
-                          <button key={index} onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl hover:border-violet-400 transition-colors text-left">
-                            <div className="bg-violet-100 p-2 rounded-lg"><FileText className="w-5 h-5 text-violet-600" /></div>
-                            <div className="flex-1 min-w-0"><p className="text-sm font-semibold truncate">{att.filename}</p><p className="text-xs text-slate-500">{(att.size / 1024).toFixed(0)} KB</p></div>
-                            <Download className="w-4 h-4 text-slate-400" />
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {showSummary && summary && (
-                      <div className="mb-6 bg-gradient-to-br from-indigo-50 to-white border border-indigo-100 rounded-xl p-5 shadow-sm">
-                        <div className="flex justify-between items-start mb-2">
-                           <h3 className="font-bold text-indigo-900 flex items-center gap-2"><Sparkles className="w-4 h-4"/> AI Summary</h3>
-                           <button onClick={() => setShowSummary(false)}><X className="w-4 h-4 text-indigo-400"/></button>
-                        </div>
-                        <p className="text-indigo-900 text-sm leading-relaxed">{summary}</p>
-                      </div>
-                    )}
-                    <div className="prose prose-sm max-w-none text-slate-800">
-                       {selectedMessage.isHtml 
-                         ? <div dangerouslySetInnerHTML={{ __html: selectedMessage.body }} /> 
-                         : <pre className="whitespace-pre-wrap font-sans">{selectedMessage.body}</pre>}
-                    </div>
-                    {inlineReplyOpen && (
-                      <div className="mt-8 border border-slate-200 rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-bottom-5">
-                         <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex justify-between items-center">
-                            <span className="text-sm font-bold text-slate-700">Reply</span>
-                            <button onClick={() => setInlineReplyOpen(false)}><X className="w-4 h-4 text-slate-500" /></button>
-                         </div>
-                         <div className="p-4 bg-white">
-                            <textarea value={replyBody} onChange={(e) => setReplyBody(e.target.value)} placeholder="Type your reply..." className="w-full h-32 p-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-violet-500 outline-none resize-none mb-3" />
-                            <div className="flex justify-between items-center">
-                               <div className="flex gap-2">
-                                  <button onClick={() => document.getElementById('reply-file').click()} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500"><Paperclip className="w-5 h-5"/></button>
-                                  <input type="file" id="reply-file" onChange={handleFileSelect} className="hidden" multiple />
-                                  {attachments.length > 0 && <span className="text-xs bg-slate-100 px-2 py-1 rounded-md self-center">{attachments.length} files</span>}
-                               </div>
-                               <button onClick={sendInlineReply} disabled={loading} className="bg-violet-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-violet-700">Send Reply</button>
-                            </div>
-                         </div>
-                      </div>
-                    )}
-                 </div>
-               </div>
-            </div>
-          )}
-        </div>
-      </main>
+                run_date = parser.parse(scheduled_time_str)
+                if run_date.tzinfo is None:
+                    run_date = pytz.UTC.localize(run_date)
+                else:
+                    run_date = run_date.astimezone(pytz.UTC)
 
-      {/* --- FLOATING BUTTONS, MODALS, ETC (Kept same) --- */}
-      {(currentView === 'inbox' || currentView === 'sent' || currentView === 'scheduled' || currentView === 'spam') && (
-        <button onClick={handleCompose} className="md:hidden fixed right-4 bottom-6 bg-violet-600 text-white p-4 rounded-full shadow-lg z-30 active:scale-95 transition-transform">
-          <Plus className="w-6 h-6" />
-        </button>
-      )}
-      {/* ... (Rest of Floating buttons and Compose Modal code remains the same as previous) ... */}
-      {currentView === 'message' && !inlineReplyOpen && (
-        <div className="md:hidden fixed right-4 bottom-6 flex flex-col gap-3 z-30">
-          <button onClick={handleSummarize} className="bg-indigo-600 text-white p-3 rounded-full shadow-lg active:scale-95 transition-transform"><Sparkles className="w-6 h-6" /></button>
-          <button onClick={handleReplyClick} className="bg-violet-600 text-white p-3 rounded-full shadow-lg active:scale-95 transition-transform"><Reply className="w-6 h-6" /></button>
-        </div>
-      )}
-      {currentView === 'compose' && (
-          <div className="fixed inset-0 z-50 bg-white md:bg-black/50 md:flex md:items-center md:justify-center p-0 md:p-4">
-            <div className="bg-white w-full h-full md:h-auto md:max-w-2xl md:max-h-[85vh] md:rounded-2xl md:shadow-2xl overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-slate-50">
-                <h2 className="text-lg font-bold text-slate-800">New Message</h2>
-                <button onClick={() => { setShowCompose(false); handleNavigation('inbox'); }} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X className="w-5 h-5" /></button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-32 md:pb-6">
-                <div className="hidden md:block mb-6 bg-indigo-50 border border-indigo-100 rounded-xl overflow-hidden">
-                  <div className="flex border-b border-indigo-100 bg-white/50 px-4 py-2 justify-between items-center">
-                    <span className="text-xs font-bold text-indigo-800 flex items-center gap-1"><Sparkles className="w-3 h-3"/> AI Assistant</span>
-                    <div className="flex bg-slate-200 rounded-lg p-0.5">
-                      <button onClick={() => setAiMode('voice')} className={`px-3 py-0.5 rounded-md text-xs font-bold transition-all ${aiMode === 'voice' ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-500'}`}>Voice</button>
-                      <button onClick={() => setAiMode('text')} className={`px-3 py-0.5 rounded-md text-xs font-bold transition-all ${aiMode === 'text' ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-500'}`}>Text</button>
-                    </div>
-                  </div>
-                  <div className="p-4">
-                    {aiMode === 'voice' ? (
-                      <button onClick={handleAudioToggle} disabled={isAiProcessing} className={`w-full py-3 rounded-lg font-bold text-white transition-all flex items-center justify-center gap-2 ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                        {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}{isRecording ? 'Stop Recording' : 'Tap to Speak'}
-                      </button>
-                    ) : (
-                      <div className="flex gap-2">
-                        <input value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} placeholder="Describe email..." className="flex-1 px-3 py-2 rounded-lg border border-indigo-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                        <button onClick={handleAiTextSubmit} disabled={isAiProcessing || !aiInstruction.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold">Generate</button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="space-y-4">
-                   <div className="relative">
-                      <div className="flex justify-between"><label className="text-xs font-bold text-slate-500 uppercase">To</label><button onClick={() => setShowCcBcc(!showCcBcc)} className="text-xs text-violet-600 font-semibold">CC/BCC</button></div>
-                      <input value={toField} onChange={(e) => setToField(e.target.value)} onFocus={() => setActiveField('to')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'to')} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none font-medium text-slate-800" placeholder="Recipient" />
-                      {renderSuggestions('to')}
-                   </div>
-                   {showCcBcc && (
-                     <>
-                       <div className="relative"><label className="text-xs font-bold text-slate-500 uppercase">Cc</label><input value={ccField} onChange={(e) => setCcField(e.target.value)} onFocus={() => setActiveField('cc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'cc')} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none" />{renderSuggestions('cc')}</div>
-                       <div className="relative"><label className="text-xs font-bold text-slate-500 uppercase">Bcc</label><input value={bccField} onChange={(e) => setBccField(e.target.value)} onFocus={() => setActiveField('bcc')} onBlur={handleBlur} onKeyDown={(e) => handleKeyDown(e, 'bcc')} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none" />{renderSuggestions('bcc')}</div>
-                     </>
-                   )}
-                   <div><label className="text-xs font-bold text-slate-500 uppercase">Subject</label><input value={subject} onChange={(e) => setSubject(e.target.value)} className="w-full py-2 border-b border-slate-200 focus:border-violet-500 outline-none font-bold text-lg text-slate-800" placeholder="Add a subject" /></div>
-                   <textarea value={body} onChange={(e) => setBody(e.target.value)} className="w-full h-64 py-2 outline-none resize-none text-slate-700 leading-relaxed" placeholder="Type your message..." />
-                   {attachments.length > 0 && (
-                     <div className="flex flex-wrap gap-2">
-                       {attachments.map((file, i) => (
-                         <div key={i} className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
-                           <span className="text-xs font-medium truncate max-w-[150px]">{file.name}</span>
-                           <button onClick={() => removeAttachment(i)}><X className="w-3 h-3 text-slate-500 hover:text-red-500"/></button>
-                         </div>
-                       ))}
-                     </div>
-                   )}
-                </div>
-                <div className="flex items-center gap-3 mt-6 pt-4 border-t border-slate-100">
-                  <div className="flex items-center gap-2 flex-1">
-                     <button onClick={handleSend} disabled={loading} className={`px-6 py-2.5 rounded-xl font-bold text-white shadow-lg flex items-center gap-2 transition-all ${scheduleTime ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-violet-600 hover:bg-violet-700'}`}>
-                        {scheduleTime ? <Calendar className="w-4 h-4" /> : <Send className="w-4 h-4" />} {scheduleTime ? 'Schedule' : 'Send'}
-                     </button>
-                     <div className="relative">
-                        <button onClick={() => setShowScheduleInput(!showScheduleInput)} className={`p-2.5 rounded-xl border ${scheduleTime ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}><Clock className="w-5 h-5"/></button>
-                        {showScheduleInput && (
-                           <div className="absolute bottom-14 left-0 bg-white p-3 rounded-xl shadow-xl border border-slate-200 w-64 animate-in slide-in-from-bottom-2">
-                              <label className="text-xs font-bold text-slate-500 mb-2 block">Pick date & time</label>
-                              <input type="datetime-local" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-full text-sm p-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 mb-2"/>
-                              {scheduleTime && <button onClick={() => { setScheduleTime(''); setShowScheduleInput(false); }} className="text-xs text-red-500 font-bold w-full text-center hover:underline">Clear Schedule</button>}
-                           </div>
-                        )}
-                     </div>
-                     <button onClick={() => fileInputRef.current.click()} className="p-2.5 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"><Paperclip className="w-5 h-5"/></button>
-                     <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
-                  </div>
-                </div>
-              </div>
-              <div className="md:hidden">
-                 {showMobileTextInput ? (
-                    <div className="p-4 bg-slate-50 border-t border-slate-200 animate-in slide-in-from-bottom">
-                       <div className="flex gap-2">
-                          <textarea value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} className="flex-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-20" placeholder="Describe email..." autoFocus />
-                          <div className="flex flex-col gap-2">
-                             <button onClick={() => setShowMobileTextInput(false)} className="p-2 bg-slate-200 rounded-lg text-slate-600"><ChevronUp className="w-5 h-5 rotate-180"/></button>
-                             <button onClick={handleAiTextSubmit} className="flex-1 bg-indigo-600 text-white rounded-lg flex items-center justify-center"><Send className="w-5 h-5"/></button>
-                          </div>
-                       </div>
-                    </div>
-                 ) : (
-                    <div className="absolute bottom-6 right-6 flex flex-col items-end gap-3 pointer-events-none">
-                       {showMobileAiMenu && (
-                          <>
-                             <button onClick={() => { setShowMobileTextInput(true); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Keyboard className="w-5 h-5"/><span className="text-xs font-bold">Type</span></button>
-                             <button onClick={() => { handleAudioToggle(); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Mic className="w-5 h-5"/><span className="text-xs font-bold">Speak</span></button>
-                          </>
-                       )}
-                       <button onClick={() => { if(isRecording) handleAudioToggle(); else setShowMobileAiMenu(!showMobileAiMenu); }} className={`pointer-events-auto p-4 rounded-full shadow-xl text-white transition-all ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-indigo-600'}`}>
-                          {isRecording ? <Square className="w-6 h-6"/> : <Sparkles className="w-6 h-6"/>}
-                       </button>
-                    </div>
-                 )}
-              </div>
-            </div>
-          </div>
-      )}
-      {showReplyMenu && (
-        <div className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-end md:items-center justify-center p-4">
-          <div className="bg-white w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-10 border border-slate-200">
-            <div className="p-5 bg-violet-50 border-b border-slate-200 flex justify-between items-center"><h3 className="font-bold text-slate-800">Reply Option</h3><button onClick={() => setShowReplyMenu(false)}><X className="w-5 h-5 text-slate-500" /></button></div>
-            <div className="p-3 space-y-2">
-              <button onClick={handleReplyThread} className="w-full text-left px-4 py-4 hover:bg-violet-50 flex items-center gap-3 rounded-xl border-2 border-transparent hover:border-violet-200"><div className="bg-violet-100 p-3 rounded-xl"><Reply className="w-5 h-5 text-violet-600" /></div><div><div className="font-bold text-slate-800">Reply to Thread</div><div className="text-xs text-slate-500">Keep history</div></div></button>
-              <button onClick={handleReplyNew} className="w-full text-left px-4 py-4 hover:bg-slate-50 flex items-center gap-3 rounded-xl border-2 border-transparent hover:border-slate-200"><div className="bg-slate-100 p-3 rounded-xl"><Mail className="w-5 h-5 text-slate-600" /></div><div><div className="font-bold text-slate-800">New Message</div><div className="text-xs text-slate-500">Separate email</div></div></button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-export default GmailComposeApp;
+                creds = service._http.credentials
+                creds_data = {
+                    'token': creds.token,
+                    'refresh_token': creds.refresh_token,
+                    'token_uri': creds.token_uri,
+                    'client_id': creds.client_id,
+                    'client_secret': creds.client_secret,
+                    'scopes': creds.scopes
+                }
+
+                doc_ref = get_db().collection('scheduled_emails').document()
+                doc_ref.set({
+                    'draft_id': draft_id,
+                    'user_email': get_current_user_email(), 
+                    'recipient': to_email,
+                    'subject': subject,
+                    'scheduled_at': run_date,
+                    'status': 'pending',
+                    'credentials': creds_data,
+                    'created_at': datetime.now(pytz.utc)
+                })
+                
+                print(f"✅ Scheduled email saved to DB: {doc_ref.id}")
+
+                return jsonify({
+                    'success': True, 
+                    'scheduled': True, 
+                    'time': scheduled_time_str,
+                    'db_id': doc_ref.id
+                })
+
+            except Exception as e:
+                print(f"❌ Scheduling Error: {e}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': f"Failed to schedule: {str(e)}"}), 500
+
+       
+        
+        if thread_id:
+            body_payload['threadId'] = thread_id
+
+        sent_message = service.users().messages().send(userId='me', body=body_payload).execute()
+        
+        try:
+            user_email = get_current_user_email()
+            mediator = get_mediator()
+            recipient_relation = mediator.json_state.get('recipient_relation')
+            if user_email and recipient_relation:
+                clean_email = to_email.split('<')[1].split('>')[0].strip() if '<' in to_email else to_email
+                save_email_relationship(user_email, clean_email, recipient_relation)
+        except: 
+            pass
+        
+        return jsonify({'success': True, 'id': sent_message['id']})
+
+    except Exception as e:
+        print(f"❌ Send error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+
+def get_mediator():
+    session_id = session.get('session_id')
+    if not session_id:
+        session_id = secrets.token_hex(16)
+        session['session_id'] = session_id
+
+    if session_id not in mediators:
+        mediators[session_id] = EmailMediator()
+
+    return mediators[session_id]
+
+
+@app.route('/api/compose/context', methods=['GET'])
+def compose_context():
+    mediator = get_mediator()
+    state = mediator.json_state
+
+    return jsonify({
+        "recipient_name": state.get("recipient_name"),
+        "recipient_option_index": state.get("recipient_options"),
+        "description": state.get("description")
+    })
+
+
+@app.route('/api/email/generate', methods=['POST'])
+def generate_email():
+    mediator = get_mediator()
+    description = mediator.json_state.get("description")
+    if mediator.json_state.get("recipient_name"):
+        description += "recipient_name: " + mediator.json_state.get("recipient_name")
+
+    revision = mediator.json_state.get("mail_revision") if mediator.json_state.get("mail_revision") else None
+
+    if not description:
+        return jsonify({
+            "success": False,
+            "error": "Description not ready"
+        }), 400
+
+    if revision:
+        description += f"\n\nPlease revise the email as follows:\n{revision}"
+    email_data = generate_email_from_description(description)
+
+    return jsonify({
+        "success": True,
+        "subject": email_data["subject"],
+        "body": email_data["body"]
+    })
+
+@app.route('/api/mediator/advance', methods=['POST'])
+def advance_mediator():
+    mediator = get_mediator()
+    user_input = request.json.get('input')
+    
+    if not user_input:
+        return jsonify({'success': False, 'error': 'Missing input'}), 400
+    
+    name = session.get('user_info', {}).get('name', 'User')
+    
+    if name == 'User':
+        # Fallback: fetch from database if not in session
+        try:
+            if 'google_creds' in session:
+                creds_data = session['google_creds']
+                creds = Credentials(
+                    token=creds_data['token'],
+                    refresh_token=creds_data.get('refresh_token'),
+                    token_uri=creds_data['token_uri'],
+                    client_id=creds_data['client_id'],
+                    client_secret=creds_data['client_secret'],
+                    scopes=creds_data['scopes']
+                )
+                
+                user_info_service = build('oauth2', 'v2', credentials=creds)
+                user_info = user_info_service.userinfo().get().execute()
+                email = user_info.get('email')
+                name = user_info.get('name', 'User')
+                
+                # Cache in session for future requests
+                session['user_info'] = {
+                    'email': email,
+                    'name': name
+                }
+        except Exception as e:
+            print(f"Error fetching user name: {e}")
+    
+    state = mediator.advance(user_input + f" sender_name: {name}")   # <-- Pass sender's name to mediator, fetched from the DB
+    print(f"[MEDIATOR ADVANCE] Input='{user_input}' | New State={state}")
+    
+    return jsonify({
+        'success': True,
+        'state': state
+    })
+
+@app.route('/api/mediator/state', methods=['GET'])
+def mediator_state():
+    mediator = get_mediator()
+    return jsonify(mediator.json_state)
+
+
+@app.route("/api/audio/transcribe", methods=["POST"])
+def transcribe_audio():
+    if "audio" not in request.files:
+        return jsonify({"success": False, "error": "No audio file"}), 400
+
+    audio_file = request.files["audio"]
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+        audio_file.save(tmp.name)
+        audio_path = tmp.name
+
+    try:
+        text = transcribe(audio_path)
+        return jsonify({ "success": True, "text": text })
+    finally:
+        os.remove(audio_path)
+
+
+
+@app.route('/api/inbox/messages', methods=['GET'])
+def get_inbox_messages():
+    """Fetch recent emails from user's inbox, sent folder, OR SEARCH RESULTS"""
+    try:
+        page_token = request.args.get('pageToken')
+        max_results = int(request.args.get('maxResults', 20))
+        label_id = request.args.get('label', 'INBOX').upper()
+        
+        query = request.args.get('q') 
+        
+        service = get_gmail_service_from_session()
+        if not service:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        if query:
+            # If searching, use the 'q' parameter
+            # We don't restrict by labelIds when searching (usually user wants to search all mail)
+            results = service.users().messages().list(
+                userId='me',
+                maxResults=max_results,
+                pageToken=page_token,
+                q=query  # Pass the search query to Gmail
+            ).execute()
+        else:
+            results = service.users().messages().list(
+                userId='me',
+                maxResults=max_results,
+                pageToken=page_token,
+                labelIds=[label_id]
+            ).execute()
+
+        messages = results.get('messages', [])
+        next_page_token = results.get('nextPageToken')
+        
+        detailed_messages = []
+        for msg in messages:
+            try:
+                message = service.users().messages().get(
+                    userId='me',
+                    id=msg['id'],
+                    format='full'
+                ).execute()
+
+                headers = message['payload'].get('headers', [])
+                subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
+                from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
+                to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), 'Unknown')
+                date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
+                
+                body = ''
+                if 'parts' in message['payload']:
+                    for part in message['payload']['parts']:
+                        if part['mimeType'] == 'text/plain' and 'body' in part and 'data' in part['body']:
+                            body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                            break
+                elif 'body' in message['payload'] and 'data' in message['payload']['body']:
+                    body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8', errors='ignore')
+
+                is_unread = 'UNREAD' in message.get('labelIds', [])
+
+                detailed_messages.append({
+                    'id': message['id'],
+                    'threadId': message['threadId'],
+                    'subject': subject,
+                    'from': from_email,
+                    'to': to_email,
+                    'date': date,
+                    'snippet': message.get('snippet', ''),
+                    'body': body[:500],
+                    'isUnread': is_unread
+                })
+
+            except Exception as e:
+                print(f"Error fetching message {msg['id']}: {e}")
+                continue
+
+        return jsonify({
+            'success': True,
+            'messages': detailed_messages,
+            'nextPageToken': next_page_token
+        })
+
+    except Exception as e:
+        print(f"Inbox fetch error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/scheduled/messages', methods=['GET'])
+def get_scheduled_messages():
+    """Fetch pending scheduled emails from Firestore"""
+    try:
+        user_email = get_current_user_email()
+        if not user_email:
+            return jsonify({'success': False, 'error': 'Auth required'}), 401
+
+        # Query Firestore for pending emails for this user
+        docs_stream = get_db().collection('scheduled_emails')\
+            .where('user_email', '==', user_email)\
+            .where('status', '==', 'pending')\
+            .stream()
+
+        scheduled_messages = []
+        for doc in docs_stream:
+            data = doc.to_dict()
+            
+            scheduled_at = data.get('scheduled_at')
+            if hasattr(scheduled_at, 'isoformat'):
+                scheduled_at = scheduled_at.isoformat()
+            
+            scheduled_messages.append({
+                'id': doc.id, # Firestore ID
+                'draft_id': data.get('draft_id'),
+                'subject': data.get('subject', '(No Subject)'),
+                'from': user_email,
+                'to': data.get('recipient'),
+                'date': scheduled_at, # Using scheduled time as the date
+                'snippet': 'Scheduled for delivery...', # Placeholder
+                'isUnread': False,
+                'isScheduled': True # Flag for frontend
+            })
+
+        scheduled_messages.sort(key=lambda x: x['date'])
+
+        return jsonify({
+            'success': True,
+            'messages': scheduled_messages,
+            'nextPageToken': None
+        })
+
+    except Exception as e:
+        print(f"Scheduled fetch error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/inbox/message/<message_id>', methods=['GET'])
+def get_message_detail(message_id):
+    """Fetch full message details"""
+    try:
+        service = get_gmail_service_from_session()
+        if not service:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        message = service.users().messages().get(
+            userId='me',
+            id=message_id,
+            format='full'
+        ).execute()
+
+        headers = message['payload'].get('headers', [])
+        subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
+        from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
+        to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
+        date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
+        
+        body_html = ''
+        body_plain = ''
+        
+        # --- 1. NEW: Helper to extract attachments recursively ---
+        def get_attachments(parts):
+            atts = []
+            if not parts: return atts
+            for part in parts:
+                if part.get('filename') and part.get('body') and part['body'].get('attachmentId'):
+                    atts.append({
+                        'filename': part['filename'],
+                        'mimeType': part['mimeType'],
+                        'size': int(part['body'].get('size', 0)),
+                        'attachmentId': part['body']['attachmentId']
+                    })
+                if part.get('parts'):
+                    atts.extend(get_attachments(part['parts']))
+            return atts
+        # ---------------------------------------------------------
+
+        payload = message.get('payload', {})
+        parts = payload.get('parts', [])
+        
+        # Extract the attachments using the helper
+        attachments = get_attachments(parts)
+
+        # Logic to find Body Text/HTML
+        if parts:
+            for part in parts:
+                if part['mimeType'] == 'text/plain' and 'data' in part['body']:
+                    body_plain = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                elif part['mimeType'] == 'text/html' and 'data' in part['body']:
+                    body_html = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                elif part['mimeType'].startswith('multipart/') and 'parts' in part:
+                    for subpart in part['parts']:
+                        if subpart['mimeType'] == 'text/plain' and 'data' in subpart['body']:
+                            body_plain = base64.urlsafe_b64decode(subpart['body']['data']).decode('utf-8', errors='ignore')
+                        elif subpart['mimeType'] == 'text/html' and 'data' in subpart['body']:
+                            body_html = base64.urlsafe_b64decode(subpart['body']['data']).decode('utf-8', errors='ignore')
+        elif 'body' in payload and 'data' in payload['body']:
+            content = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
+            if payload['mimeType'] == 'text/html':
+                body_html = content
+            else:
+                body_plain = content
+        
+        body = body_html if body_html else body_plain
+        is_html = bool(body_html)
+
+        service.users().messages().modify(
+            userId='me',
+            id=message_id,
+            body={'removeLabelIds': ['UNREAD']}
+        ).execute()
+
+        return jsonify({
+            'success': True,
+            'message': {
+                'id': message['id'],
+                'threadId': message['threadId'],
+                'subject': subject,
+                'from': from_email,
+                'to': to_email,
+                'date': date,
+                'body': body,
+                'isHtml': is_html,
+                'attachments': attachments  # <--- WE SEND THE ATTACHMENTS HERE
+            }
+        })
+
+    except Exception as e:
+        print(f"Message detail error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+    
+
+
+summarizer_service = EmailSummarizer()
+@app.route('/api/email/summarize', methods=['POST', 'OPTIONS'])
+def summarize_email_route():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+
+    try:
+        data = request.get_json(force=True, silent=True) 
+        
+        if not data:
+            return jsonify({'success': False, 'error': 'No JSON data received'}), 400
+
+        text_content = data.get('text', '')
+        
+        if not text_content:
+            return jsonify({'success': False, 'error': 'Missing text'}), 400
+
+        summary_result = summarizer_service.summarize(text_content)
+
+        return jsonify({
+            'success': True,
+            'summary': summary_result
+        })
+
+    except Exception as e:
+        print(f"API Error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+
+
+@app.route('/api/email/attachment', methods=['GET'])
+def download_attachment():
+    if not get_gmail_service_from_session():
+        return jsonify({'error': 'Auth required'}), 401
+
+    message_id = request.args.get('messageId')
+    attachment_id = request.args.get('attachmentId')
+    filename = request.args.get('filename', 'download')
+
+    if not message_id or not attachment_id:
+        return jsonify({'error': 'Missing parameters'}), 400
+
+    try:
+        service = get_gmail_service_from_session()
+        
+        attachment = service.users().messages().attachments().get(
+            userId='me', 
+            messageId=message_id, 
+            id=attachment_id
+        ).execute()
+
+        file_data = base64.urlsafe_b64decode(attachment['data'].encode('UTF-8'))
+        
+        return send_file(
+            io.BytesIO(file_data),
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        print(f"Attachment error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scheduler/status', methods=['GET'])
+def scheduler_status():
+    try:
+        jobs = scheduler.get_jobs()
+        return jsonify({
+            'running': scheduler.running,
+            'jobs_count': len(jobs),
+            'jobs': [{
+                'id': job.id,
+                'next_run': str(job.next_run_time),
+                'func': job.func.__name__
+            } for job in jobs]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+
+
+
+def run_schedule_checker():
+    """Continuously checks Firestore for due emails"""
+    print("🔄🔄🔄 Scheduler Worker Started 🔄🔄🔄")
+    print(f"⏰ Starting at: {datetime.now(pytz.utc)}")
+    
+    while True:
+        try:
+            now_utc = datetime.now(pytz.utc)
+            print(f"\n{'='*60}")
+            print(f"🔍 Checking for due emails at {now_utc}")
+            
+            docs_stream = get_db().collection('scheduled_emails')\
+                .where('status', '==', 'pending')\
+                .stream()
+            
+            pending_emails = []
+            for doc in docs_stream:
+                data = doc.to_dict()
+                scheduled_at = data.get('scheduled_at')
+                
+                if scheduled_at and scheduled_at <= now_utc:
+                    pending_emails.append(doc)
+            
+            if len(pending_emails) > 0:
+                print(f"🔎 Found {len(pending_emails)} due email(s) in database!")
+            else:
+                print(f"✓ No due emails at this time")
+                print(f"{'='*60}\n")
+                time.sleep(60)
+                continue
+            
+            for doc in pending_emails:
+                data = doc.to_dict()
+                email_id = doc.id
+                
+                print(f"\n📧 Processing email: {email_id}")
+                print(f"   Scheduled for: {data.get('scheduled_at')}")
+                print(f"   Draft ID: {data.get('draft_id')}")
+                
+                try:
+                    creds_data = data.get('credentials')
+                    if not creds_data:
+                        raise Exception("No credentials found in document")
+                    
+                    print(f"   1️⃣ Reconstructing credentials...")
+                    creds = Credentials(
+                        token=creds_data['token'],
+                        refresh_token=creds_data.get('refresh_token'),
+                        token_uri=creds_data['token_uri'],
+                        client_id=creds_data['client_id'],
+                        client_secret=creds_data['client_secret'],
+                        scopes=creds_data['scopes']
+                    )
+                    
+                    print(f"   2️⃣ Building Gmail service...")
+                    service = build('gmail', 'v1', credentials=creds)
+                    
+                    draft_id = data.get('draft_id')
+                    if not draft_id:
+                        raise Exception("No draft_id found in document")
+                    
+                    print(f"   3️⃣ Sending draft {draft_id}...")
+                    sent_msg = service.users().drafts().send(
+                        userId='me', 
+                        body={'id': draft_id}
+                    ).execute()
+                    
+                    print(f"   4️⃣ Updating status to 'sent'...")
+                    get_db().collection('scheduled_emails').document(email_id).update({
+                        'status': 'sent',
+                        'sent_at': datetime.now(pytz.utc),
+                        'message_id': sent_msg['id']
+                    })
+                    
+                    print(f"   ✅✅✅ Email {email_id} sent successfully!")
+                    print(f"   Message ID: {sent_msg['id']}")
+                    
+                except Exception as e:
+                    print(f"   ❌ Failed to send {email_id}:")
+                    print(f"   Error: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    # Mark as failed
+                    try:
+                        get_db().collection('scheduled_emails').document(email_id).update({
+                            'status': 'failed',
+                            'error': str(e),
+                            'failed_at': datetime.now(pytz.utc)
+                        })
+                        print(f"   Marked as failed in database")
+                    except Exception as update_error:
+                        print(f"   ⚠️ Couldn't update status: {update_error}")
+            
+            print(f"{'='*60}\n")
+            
+            print(f"😴 Sleeping for 60 seconds...")
+            time.sleep(60)
+            
+        except Exception as e:
+            print(f"\n⚠️⚠️⚠️ Scheduler Loop Error: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"😴 Sleeping for 60 seconds after error...\n")
+            time.sleep(60)
+
+
+print("🚀 Initializing scheduler thread...")
+
+scheduler_thread = threading.Thread(
+    target=run_schedule_checker, 
+    daemon=True,
+    name="EmailSchedulerThread"
+)
+scheduler_thread.start()
+
+print(f"✅ Scheduler thread started: {scheduler_thread.is_alive()}")
+
+@app.route('/api/scheduler/health', methods=['GET'])
+def scheduler_health():
+    return jsonify({
+        'thread_alive': scheduler_thread.is_alive(),
+        'thread_name': scheduler_thread.name,
+        'current_time_utc': str(datetime.now(pytz.utc))
+    })
+
+@app.route("/api/health")
+def health():
+    return {"status": "ok"}, 200
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", debug=True, port=5001)
