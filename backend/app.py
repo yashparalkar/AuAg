@@ -846,20 +846,40 @@ def get_message_detail(message_id):
         body_plain = ''
         
         # --- 1. NEW: Helper to extract attachments recursively ---
+        # --- ROBUST ATTACHMENT EXTRACTOR ---
         def get_attachments(parts):
             atts = []
             if not parts: return atts
             for part in parts:
-                if part.get('filename') and part.get('body') and part['body'].get('attachmentId'):
+                # Check if this part has an attachment ID (it's the most reliable indicator)
+                body = part.get('body', {})
+                attachment_id = body.get('attachmentId')
+                
+                if attachment_id:
+                    # Sometimes filename is missing or empty string. Default it if necessary.
+                    filename = part.get('filename')
+                    if not filename:
+                        # Try to guess extension from mimeType if filename is missing
+                        mime = part.get('mimeType', '')
+                        ext = '.dat'
+                        if 'pdf' in mime: ext = '.pdf'
+                        elif 'spreadsheet' in mime or 'excel' in mime: ext = '.xlsx'
+                        elif 'word' in mime: ext = '.docx'
+                        elif 'image' in mime: ext = '.jpg'
+                        filename = f"attachment{ext}"
+
                     atts.append({
-                        'filename': part['filename'],
-                        'mimeType': part['mimeType'],
-                        'size': int(part['body'].get('size', 0)),
-                        'attachmentId': part['body']['attachmentId']
+                        'filename': filename,
+                        'mimeType': part.get('mimeType', 'application/octet-stream'),
+                        'size': int(body.get('size', 0)),
+                        'attachmentId': attachment_id
                     })
+                
+                # Recursively check for nested parts (important for multipart emails)
                 if part.get('parts'):
                     atts.extend(get_attachments(part['parts']))
             return atts
+        # ---------------------------------------------------------
         # ---------------------------------------------------------
 
         payload = message.get('payload', {})

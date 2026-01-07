@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar, Menu, LogOut, OctagonAlert, Search } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar, Menu, LogOut, OctagonAlert, Search, FileSpreadsheet, FileImage, FileIcon, File } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -283,6 +283,26 @@ const GmailComposeApp = () => {
       console.error('Failed to load message:', error);
     }
   }, []);
+
+  const getAttachmentConfig = (mimeType, filename) => {
+    const type = mimeType || '';
+    const name = filename || '';
+    
+    if (type.startsWith('image/')) {
+      return { icon: <FileImage className="w-5 h-5 text-purple-600" />, bg: 'bg-purple-100', color: 'text-purple-700' };
+    }
+    if (type.includes('pdf') || name.endsWith('.pdf')) {
+      return { icon: <FileText className="w-5 h-5 text-red-600" />, bg: 'bg-red-100', color: 'text-red-700' };
+    }
+    if (type.includes('sheet') || type.includes('excel') || name.endsWith('.xlsx') || name.endsWith('.csv')) {
+      return { icon: <FileSpreadsheet className="w-5 h-5 text-emerald-600" />, bg: 'bg-emerald-100', color: 'text-emerald-700' };
+    }
+    if (type.includes('word') || type.includes('document') || name.endsWith('.docx')) {
+      return { icon: <FileText className="w-5 h-5 text-blue-600" />, bg: 'bg-blue-100', color: 'text-blue-700' };
+    }
+    // Default
+    return { icon: <File className="w-5 h-5 text-slate-600" />, bg: 'bg-slate-100', color: 'text-slate-700' };
+  };
 
   // ... File/Attachment/Effect helpers same as before ...
   const handleFileSelect = (e) => { if (e.target.files && e.target.files.length > 0) { setAttachments(prev => [...prev, ...Array.from(e.target.files)]); } };
@@ -738,17 +758,72 @@ const GmailComposeApp = () => {
                           <p className="text-xs text-slate-400 mt-1">To: {selectedMessage.to}</p>
                        </div>
                     </div>
+                    {/* --- START OF IMPROVED ATTACHMENT SECTION --- */}
                     {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
-                      <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {selectedMessage.attachments.map((att, index) => (
-                          <button key={index} onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl hover:border-violet-400 transition-colors text-left">
-                            <div className="bg-violet-100 p-2 rounded-lg"><FileText className="w-5 h-5 text-violet-600" /></div>
-                            <div className="flex-1 min-w-0"><p className="text-sm font-semibold truncate">{att.filename}</p><p className="text-xs text-slate-500">{(att.size / 1024).toFixed(0)} KB</p></div>
-                            <Download className="w-4 h-4 text-slate-400" />
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                      <div className="mb-8">
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+                          {selectedMessage.attachments.length} Attachment{selectedMessage.attachments.length > 1 ? 's' : ''}
+                        </h3>
+
+                        {/* 1. IMAGE PREVIEWS GRID (If any images exist) */}
+                        <div className="flex flex-wrap gap-4 mb-4">
+                          {selectedMessage.attachments
+                            .filter(att => att.mimeType && att.mimeType.startsWith('image/'))
+                            .map((att, index) => {
+                                // Construct the URL for the image source
+                                const imgUrl = `${API_BASE}/email/attachment?messageId=${selectedMessage.id}&attachmentId=${att.attachmentId}&filename=${encodeURIComponent(att.filename)}`;
+                                return (
+                                  <div key={`img-${index}`} className="group relative w-48 h-32 rounded-xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-md transition-all">
+                                    <img 
+                                      src={imgUrl} 
+                                      alt={att.filename} 
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => {e.target.style.display='none'}} // Hide if auth fails on img tag
+                                    />
+                                    {/* Overlay Download Button */}
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <button 
+                                        onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)}
+                                        className="p-2 bg-white rounded-full hover:bg-slate-100"
+                                      >
+                                        <Download className="w-4 h-4 text-slate-800" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                            })}
+                        </div>
+
+                        {/* 2. FILE LIST (All attachments including images, as download blocks) */}
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Attached Files</h3>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                            {selectedMessage.attachments.map((att, index) => {
+                              // Use the helper to get the right color/icon
+                              const config = getAttachmentConfig(att.mimeType, att.filename); 
+                              return (
+                                <button 
+                                  key={index} 
+                                  onClick={() => handleDownload(selectedMessage.id, att.attachmentId, att.filename)} 
+                                  className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl hover:border-violet-400 hover:shadow-md transition-all text-left group"
+                                >
+                                  <div className={`p-2.5 rounded-lg ${config.bg}`}>
+                                    {config.icon}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className={`text-sm font-semibold truncate ${config.color}`}>
+                                      {att.filename}
+                                    </p>
+                                    <p className="text-xs text-slate-500">
+                                      {(att.size / 1024).toFixed(0)} KB
+                                    </p>
+                                  </div>
+                                  <Download className="w-4 h-4 text-slate-300 group-hover:text-violet-500" />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     {showSummary && summary && (
                       <div className="mb-6 bg-gradient-to-br from-indigo-50 to-white border border-indigo-100 rounded-xl p-5 shadow-sm">
                         <div className="flex justify-between items-start mb-2">
