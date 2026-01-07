@@ -845,43 +845,58 @@ def get_message_detail(message_id):
         body_html = ''
         body_plain = ''
         
-        # --- 1. NEW: Helper to extract attachments recursively ---
-        # --- ROBUST ATTACHMENT EXTRACTOR ---
+        # --- ROBUST ATTACHMENT EXTRACTOR (FINAL VERSION) ---
         def get_attachments(parts):
             atts = []
             if not parts: return atts
             for part in parts:
-                # Check if this part has an attachment ID (it's the most reliable indicator)
                 body = part.get('body', {})
                 attachment_id = body.get('attachmentId')
-                
-                if attachment_id:
-                    # Sometimes filename is missing or empty string. Default it if necessary.
-                    filename = part.get('filename')
-                    if not filename:
-                        # Try to guess extension from mimeType if filename is missing
-                        mime = part.get('mimeType', '')
-                        ext = '.dat'
-                        if 'pdf' in mime: ext = '.pdf'
-                        elif 'spreadsheet' in mime or 'excel' in mime: ext = '.xlsx'
-                        elif 'word' in mime: ext = '.docx'
-                        elif 'image' in mime: ext = '.jpg'
-                        filename = f"attachment{ext}"
+                filename = part.get('filename')
+                mime_type = part.get('mimeType', '')
 
-                    atts.append({
-                        'filename': filename,
-                        'mimeType': part.get('mimeType', 'application/octet-stream'),
-                        'size': int(body.get('size', 0)),
-                        'attachmentId': attachment_id
-                    })
+                # 1. If filename is missing, check the HEADERS (Common for Excel/PDF)
+                if not filename or filename == "":
+                    headers = part.get('headers', [])
+                    for h in headers:
+                        if h['name'].lower() == 'content-disposition':
+                            # fast and dirty parse for filename="sample.xlsx"
+                            val = h['value']
+                            if 'filename=' in val:
+                                try:
+                                    # Extract text between quotes
+                                    filename = val.split('filename=')[1].split(';')[0].strip('"').strip("'")
+                                except:
+                                    pass
+
+                # 2. Logic: If we have an ID, we keep it. 
+                # If we have a filename but no ID, we keep it (it might be inline).
+                if attachment_id or (filename and len(filename) > 0):
+                    
+                    # Fallback if filename is STILL missing
+                    if not filename:
+                        ext = '.dat'
+                        if 'pdf' in mime_type: ext = '.pdf'
+                        elif 'spreadsheet' in mime_type or 'excel' in mime_type: ext = '.xlsx'
+                        elif 'word' in mime_type: ext = '.docx'
+                        elif 'image' in mime_type: ext = '.jpg'
+                        elif 'csv' in mime_type: ext = '.csv'
+                        filename = f"document{ext}"
+
+                    # Only add if we have an attachment_id (needed for download)
+                    if attachment_id:
+                        atts.append({
+                            'filename': filename,
+                            'mimeType': mime_type,
+                            'size': int(body.get('size', 0)),
+                            'attachmentId': attachment_id
+                        })
                 
-                # Recursively check for nested parts (important for multipart emails)
+                # 3. Recursion (Crucial for Excel files hidden in multipart/mixed)
                 if part.get('parts'):
                     atts.extend(get_attachments(part['parts']))
             return atts
         # ---------------------------------------------------------
-        # ---------------------------------------------------------
-
         payload = message.get('payload', {})
         parts = payload.get('parts', [])
         
