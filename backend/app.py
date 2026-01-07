@@ -824,7 +824,7 @@ def get_scheduled_messages():
 
 @app.route('/api/inbox/message/<message_id>', methods=['GET'])
 def get_message_detail(message_id):
-    """Fetch full message details"""
+    """Fetch full message details with Debugging for Attachments"""
     try:
         service = get_gmail_service_from_session()
         if not service:
@@ -836,7 +836,66 @@ def get_message_detail(message_id):
             format='full'
         ).execute()
 
-        headers = message['payload'].get('headers', [])
+        # --- DEBUG: ROBUST ATTACHMENT EXTRACTOR ---
+        def get_attachments(parts):
+            atts = []
+            if not parts: return atts
+            
+            for part in parts:
+                body = part.get('body', {})
+                attachment_id = body.get('attachmentId')
+                mime_type = part.get('mimeType', 'application/octet-stream')
+                filename = part.get('filename')
+                
+                # Check headers for filename if main field is empty
+                if not filename:
+                    for h in part.get('headers', []):
+                        if h['name'].lower() == 'content-disposition' and 'filename=' in h['value']:
+                            try:
+                                filename = h['value'].split('filename=')[1].split(';')[0].strip(' "')
+                            except: pass
+
+                # LOGGING: See this in your Render Logs
+                if attachment_id or (filename and filename != ''):
+                    print(f"[DEBUG] Found Part: Mime={mime_type}, File={filename}, ID={str(attachment_id)[:10]}...")
+
+                # LOGIC: If it has an ID, we accept it. No exceptions.
+                if attachment_id:
+                    # If filename is STILL missing, force a name based on mimetype
+                    if not filename:
+                        ext = '.dat'
+                        if 'pdf' in mime_type: ext = '.pdf'
+                        elif 'spreadsheet' in mime_type or 'excel' in mime_type or 'xls' in mime_type: ext = '.xlsx'
+                        elif 'word' in mime_type or 'document' in mime_type: ext = '.docx'
+                        elif 'image' in mime_type: ext = '.jpg'
+                        elif 'csv' in mime_type: ext = '.csv'
+                        elif 'text/plain' in mime_type: ext = '.txt'
+                        filename = f"attachment{ext}"
+                        print(f"[DEBUG] Renamed missing file to: {filename}")
+
+                    atts.append({
+                        'filename': filename,
+                        'mimeType': mime_type,
+                        'size': int(body.get('size', 0)),
+                        'attachmentId': attachment_id
+                    })
+                
+                # RECURSION: Check inside this part for children
+                if part.get('parts'):
+                    atts.extend(get_attachments(part['parts']))
+            
+            return atts
+        # ---------------------------------------------------------
+
+        payload = message.get('payload', {})
+        parts = payload.get('parts', [])
+        
+        # Extract the attachments
+        attachments = get_attachments(parts)
+        print(f"[DEBUG] Total Attachments found for {message_id}: {len(attachments)}")
+
+        # Extract Body Logic (Standard)
+        headers = payload.get('headers', [])
         subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
         from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
         to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
@@ -845,92 +904,36 @@ def get_message_detail(message_id):
         body_html = ''
         body_plain = ''
         
-        # --- ROBUST ATTACHMENT EXTRACTOR (FINAL VERSION) ---
-        def get_attachments(parts):
-            atts = []
-            if not parts: return atts
-            for part in parts:
-                body = part.get('body', {})
-                attachment_id = body.get('attachmentId')
-                filename = part.get('filename')
-                mime_type = part.get('mimeType', '')
+        # Simple Body Extraction
+        def extract_body(parts_list):
+            b_plain, b_html = None, None
+            for p in parts_list:
+                if p.get('mimeType') == 'text/plain' and 'data' in p.get('body', {}):
+                    b_plain = base64.urlsafe_b64decode(p['body']['data']).decode('utf-8', errors='ignore')
+                elif p.get('mimeType') == 'text/html' and 'data' in p.get('body', {}):
+                    b_html = base64.urlsafe_b64decode(p['body']['data']).decode('utf-8', errors='ignore')
+                elif p.get('parts'):
+                    sub_plain, sub_html = extract_body(p['parts'])
+                    if not b_plain: b_plain = sub_plain
+                    if not b_html: b_html = sub_html
+            return b_plain, b_html
 
-                # 1. If filename is missing, check the HEADERS (Common for Excel/PDF)
-                if not filename or filename == "":
-                    headers = part.get('headers', [])
-                    for h in headers:
-                        if h['name'].lower() == 'content-disposition':
-                            # fast and dirty parse for filename="sample.xlsx"
-                            val = h['value']
-                            if 'filename=' in val:
-                                try:
-                                    # Extract text between quotes
-                                    filename = val.split('filename=')[1].split(';')[0].strip('"').strip("'")
-                                except:
-                                    pass
-
-                # 2. Logic: If we have an ID, we keep it. 
-                # If we have a filename but no ID, we keep it (it might be inline).
-                if attachment_id or (filename and len(filename) > 0):
-                    
-                    # Fallback if filename is STILL missing
-                    if not filename:
-                        ext = '.dat'
-                        if 'pdf' in mime_type: ext = '.pdf'
-                        elif 'spreadsheet' in mime_type or 'excel' in mime_type: ext = '.xlsx'
-                        elif 'word' in mime_type: ext = '.docx'
-                        elif 'image' in mime_type: ext = '.jpg'
-                        elif 'csv' in mime_type: ext = '.csv'
-                        filename = f"document{ext}"
-
-                    # Only add if we have an attachment_id (needed for download)
-                    if attachment_id:
-                        atts.append({
-                            'filename': filename,
-                            'mimeType': mime_type,
-                            'size': int(body.get('size', 0)),
-                            'attachmentId': attachment_id
-                        })
-                
-                # 3. Recursion (Crucial for Excel files hidden in multipart/mixed)
-                if part.get('parts'):
-                    atts.extend(get_attachments(part['parts']))
-            return atts
-        # ---------------------------------------------------------
-        payload = message.get('payload', {})
-        parts = payload.get('parts', [])
-        
-        # Extract the attachments using the helper
-        attachments = get_attachments(parts)
-
-        # Logic to find Body Text/HTML
         if parts:
-            for part in parts:
-                if part['mimeType'] == 'text/plain' and 'data' in part['body']:
-                    body_plain = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
-                elif part['mimeType'] == 'text/html' and 'data' in part['body']:
-                    body_html = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
-                elif part['mimeType'].startswith('multipart/') and 'parts' in part:
-                    for subpart in part['parts']:
-                        if subpart['mimeType'] == 'text/plain' and 'data' in subpart['body']:
-                            body_plain = base64.urlsafe_b64decode(subpart['body']['data']).decode('utf-8', errors='ignore')
-                        elif subpart['mimeType'] == 'text/html' and 'data' in subpart['body']:
-                            body_html = base64.urlsafe_b64decode(subpart['body']['data']).decode('utf-8', errors='ignore')
+            body_plain, body_html = extract_body(parts)
         elif 'body' in payload and 'data' in payload['body']:
             content = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
-            if payload['mimeType'] == 'text/html':
-                body_html = content
-            else:
-                body_plain = content
+            if payload['mimeType'] == 'text/html': body_html = content
+            else: body_plain = content
         
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
-        service.users().messages().modify(
-            userId='me',
-            id=message_id,
-            body={'removeLabelIds': ['UNREAD']}
-        ).execute()
+        # Mark as read
+        try:
+            service.users().messages().modify(
+                userId='me', id=message_id, body={'removeLabelIds': ['UNREAD']}
+            ).execute()
+        except: pass
 
         return jsonify({
             'success': True,
@@ -943,18 +946,15 @@ def get_message_detail(message_id):
                 'date': date,
                 'body': body,
                 'isHtml': is_html,
-                'attachments': attachments  # <--- WE SEND THE ATTACHMENTS HERE
+                'attachments': attachments
             }
         })
 
     except Exception as e:
-        print(f"Message detail error: {e}")
+        print(f"[ERROR] Message detail error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
     
 
 
