@@ -779,6 +779,7 @@ def get_inbox_messages():
 def extract_attachments(payload):
     """Extract attachment metadata from message payload"""
     if not payload:
+        print("DEBUG: No payload provided")
         return []
     
     attachments = []
@@ -787,19 +788,32 @@ def extract_attachments(payload):
         if not parts:
             return
         for part in parts:
-            if part.get('filename') and part.get('body', {}).get('attachmentId'):
-                attachments.append({
-                    'filename': part['filename'],
+            filename = part.get('filename')
+            body = part.get('body', {})
+            attachment_id = body.get('attachmentId')
+            
+            print(f"DEBUG traverse: filename={filename}, has_attachmentId={bool(attachment_id)}, mimeType={part.get('mimeType')}")
+            
+            if filename and attachment_id:
+                att = {
+                    'filename': filename,
                     'mimeType': part.get('mimeType'),
-                    'size': part.get('body', {}).get('size', 0),
-                    'attachmentId': part['body']['attachmentId']
-                })
+                    'size': body.get('size', 0),
+                    'attachmentId': attachment_id
+                }
+                print(f"DEBUG: Found attachment: {att}")
+                attachments.append(att)
+            
             if part.get('parts'):
                 traverse(part['parts'])
     
     if payload.get('parts'):
+        print(f"DEBUG: Payload has {len(payload.get('parts'))} parts")
         traverse(payload['parts'])
+    else:
+        print("DEBUG: Payload has no parts")
     
+    print(f"DEBUG: Total attachments extracted: {len(attachments)}")
     return attachments
 
 @app.route('/api/scheduled/messages', methods=['GET'])
@@ -910,7 +924,20 @@ def get_message_detail(message_id):
         is_html = bool(body_html)
 
         # Extract attachments
+        # Extract attachments
         attachments = extract_attachments(message['payload'])
+        
+        # DEBUG LOGGING
+        print(f"\n{'='*60}")
+        print(f"DEBUG: Message ID: {message_id}")
+        print(f"DEBUG: Attachments found: {len(attachments)}")
+        print(f"DEBUG: Attachment details: {attachments}")
+        print(f"DEBUG: Payload keys: {message['payload'].keys()}")
+        if 'parts' in message['payload']:
+            print(f"DEBUG: Number of parts: {len(message['payload']['parts'])}")
+            for i, part in enumerate(message['payload']['parts']):
+                print(f"DEBUG: Part {i}: mimeType={part.get('mimeType')}, filename={part.get('filename')}, has_attachmentId={bool(part.get('body', {}).get('attachmentId'))}")
+        print(f"{'='*60}\n")
         
         service.users().messages().modify(
             userId='me',
@@ -929,7 +956,7 @@ def get_message_detail(message_id):
                 'date': date,
                 'body': body,
                 'isHtml': is_html,
-                'attachments': attachments  # ADD THIS LINE
+                'attachments': attachments
             }
         })
 
