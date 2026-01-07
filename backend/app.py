@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, jsonify, request, session, redirect, send_from_directory
 from flask_cors import CORS
 from gmail_oauth import GmailOAuthManager
@@ -141,7 +140,6 @@ def google_callback():
         creds = flow.credentials
         session["google_creds"] = credentials_to_dict(creds)
         
-        # Fetch and store user info
         try:
             user_info_service = build('oauth2', 'v2', credentials=creds)
             user_info = user_info_service.userinfo().get().execute()
@@ -154,10 +152,8 @@ def google_callback():
             if get_db():
                 user_ref = get_db().collection('users').document(email)
 
-                # 1. Get the current document snapshot to check existence
                 doc_snap = user_ref.get()
                 
-                # 2. Prepare the data that should ALWAYS be updated
                 user_data = {
                     'email': email,
                     'name': name,
@@ -165,12 +161,9 @@ def google_callback():
                     'last_seen': firestore.SERVER_TIMESTAMP,
                 }
 
-                # 3. Only initialize 'relations' if the user DOES NOT exist
                 if not doc_snap.exists:
                     user_data['relations'] = {} 
 
-                # 4. Save using merge=True
-                # If user exists: 'relations' is NOT in user_data, so the DB version is preserved
                 user_ref.set(user_data, merge=True)
             
             # Cache in session for quick access
@@ -206,7 +199,6 @@ def auth_status():
             scopes=creds_data['scopes']
         )
         
-        # Fetch user info from Google
         user_info_service = build('oauth2', 'v2', credentials=creds)
         user_info = user_info_service.userinfo().get().execute()
         
@@ -261,10 +253,8 @@ def search_contacts():
 
         creds = service._http.credentials
 
-        # 1. Search Google Contacts
         google_contacts = GmailOAuthManager.search_contacts_with_creds(creds, query)
         
-        # 2. Search Saved Relations
         user_email = get_current_user_email()
         relation_contacts = []
         
@@ -279,9 +269,7 @@ def search_contacts():
                     
                     query_lower = query.lower()
                     
-                    # Search through relations
                     for relation, emails in relations.items():
-                        # Match by relation name (e.g., "manager", "professor")
                         if query_lower in relation.lower():
                             for email in emails:
                                 relation_contacts.append({
@@ -289,7 +277,6 @@ def search_contacts():
                                     'email': email,
                                     'source': 'saved_relation'
                                 })
-                        # Match by email
                         else:
                             for email in emails:
                                 if query_lower in email.lower():
@@ -302,17 +289,14 @@ def search_contacts():
             except Exception as e:
                 print(f"Error searching saved relations: {e}")
         
-        # 3. Merge results (remove duplicates, prioritize saved relations)
         all_contacts = []
         seen_emails = set()
         
-        # Add saved relations first (higher priority)
         for contact in relation_contacts:
             if contact['email'] not in seen_emails:
                 all_contacts.append(contact)
                 seen_emails.add(contact['email'])
         
-        # Add Google Contacts
         for contact in google_contacts:
             if contact['email'] not in seen_emails:
                 contact['source'] = 'google_contacts'
@@ -327,8 +311,6 @@ def search_contacts():
         print(f"[CONTACT SEARCH ERROR] Query='{query}' | Error={e}")
         return jsonify({'error': 'Failed to search contacts'}), 500
 
-
-# Add this helper function after the get_mediator() function
 
 def get_current_user_email():
     """Get current user's email from session"""
@@ -368,15 +350,12 @@ def save_email_relationship(user_email, recipient_email, relation):
             user_data = user_doc.to_dict()
             relations = user_data.get('relations', {})
             
-            # Update or add the relation
             if relation not in relations:
                 relations[relation] = []
             
-            # Add email if not already present
             if recipient_email not in relations[relation]:
                 relations[relation].append(recipient_email)
             
-            # Update Firebase
             user_ref.update({'relations': relations})
             print(f"Saved relationship: {relation} -> {recipient_email} for user {user_email}")
             return True
@@ -466,17 +445,15 @@ def send_email():
         if not service:
             return jsonify({'success': False, 'error': 'Auth required'}), 401
 
-        # 1. Extract Form Data
         to_email = request.form.get('to')
         subject = request.form.get('subject')
         body_text = request.form.get('body')
         thread_id = request.form.get('threadId')
         reply_to_id = request.form.get('messageId')
-        scheduled_time_str = request.form.get('scheduledTime') # Check if this exists
+        scheduled_time_str = request.form.get('scheduledTime')
         
         uploaded_files = request.files.getlist('attachments')
         
-        # 2. Build the Email Message (Common for both Scheduled and Immediate)
         message = MIMEMultipart()
         message['to'] = to_email
         message['from'] = 'me'
@@ -494,7 +471,6 @@ def send_email():
                 except Exception as e:
                     print(f"Error attaching file {file.filename}: {e}")
 
-        # Threading Headers
         if reply_to_id:
             try:
                 original_msg = service.users().messages().get(
@@ -511,29 +487,22 @@ def send_email():
             except Exception as e:
                 print(f"Threading error: {e}")
         
-        # Encode message
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
         body_payload = {'raw': raw_message}
 
-        # ==========================================
-        # PATH A: SCHEDULED SEND (Save to DB)
-        # ==========================================
         if scheduled_time_str:
             try:
-                # A1. Create Draft in Gmail (so we have a valid message ID/Draft ID)
                 draft_body = {'message': body_payload}
-                # For drafts, we usually don't need threadId in the body, headers handle it
+                
                 draft = service.users().drafts().create(userId='me', body=draft_body).execute()
                 draft_id = draft['id']
 
-                # A2. Parse Time
                 run_date = parser.parse(scheduled_time_str)
                 if run_date.tzinfo is None:
                     run_date = pytz.UTC.localize(run_date)
                 else:
                     run_date = run_date.astimezone(pytz.UTC)
 
-                # A3. Save Credentials for Background Worker
                 creds = service._http.credentials
                 creds_data = {
                     'token': creds.token,
@@ -544,7 +513,6 @@ def send_email():
                     'scopes': creds.scopes
                 }
 
-                # A4. Save to Firestore
                 doc_ref = get_db().collection('scheduled_emails').document()
                 doc_ref.set({
                     'draft_id': draft_id,
@@ -559,7 +527,6 @@ def send_email():
                 
                 print(f"✅ Scheduled email saved to DB: {doc_ref.id}")
 
-                # Return early - DO NOT run immediate logic
                 return jsonify({
                     'success': True, 
                     'scheduled': True, 
@@ -573,17 +540,13 @@ def send_email():
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': f"Failed to schedule: {str(e)}"}), 500
 
-        # ==========================================
-        # PATH B: IMMEDIATE SEND (Your snippet)
-        # ==========================================
-        # This only runs if scheduled_time_str was empty
+       
         
         if thread_id:
             body_payload['threadId'] = thread_id
 
         sent_message = service.users().messages().send(userId='me', body=body_payload).execute()
         
-        # Save Relationship
         try:
             user_email = get_current_user_email()
             mediator = get_mediator()
@@ -631,6 +594,9 @@ def compose_context():
 def generate_email():
     mediator = get_mediator()
     description = mediator.json_state.get("description")
+    if mediator.json_state.get("recipient_name"):
+        description += "recipient_name: " + mediator.json_state.get("recipient_name")
+
     revision = mediator.json_state.get("mail_revision") if mediator.json_state.get("mail_revision") else None
 
     if not description:
@@ -717,25 +683,22 @@ def transcribe_audio():
     finally:
         os.remove(audio_path)
 
-# app.py
+
 
 @app.route('/api/inbox/messages', methods=['GET'])
 def get_inbox_messages():
     """Fetch recent emails from user's inbox, sent folder, OR SEARCH RESULTS"""
     try:
-        # Get pagination parameters
         page_token = request.args.get('pageToken')
         max_results = int(request.args.get('maxResults', 20))
         label_id = request.args.get('label', 'INBOX').upper()
         
-        # --- NEW: Get Search Query ---
         query = request.args.get('q') 
         
         service = get_gmail_service_from_session()
         if not service:
             return jsonify({'error': 'Not authenticated'}), 401
 
-        # --- LOGIC UPDATE ---
         if query:
             # If searching, use the 'q' parameter
             # We don't restrict by labelIds when searching (usually user wants to search all mail)
@@ -746,7 +709,6 @@ def get_inbox_messages():
                 q=query  # Pass the search query to Gmail
             ).execute()
         else:
-            # Standard View (Inbox, Sent, Spam, etc.)
             results = service.users().messages().list(
                 userId='me',
                 maxResults=max_results,
@@ -756,8 +718,6 @@ def get_inbox_messages():
 
         messages = results.get('messages', [])
         next_page_token = results.get('nextPageToken')
-
-        # ... (The rest of the function remains exactly the same: fetching details, etc.) ...
         
         detailed_messages = []
         for msg in messages:
@@ -784,6 +744,9 @@ def get_inbox_messages():
                     body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8', errors='ignore')
 
                 is_unread = 'UNREAD' in message.get('labelIds', [])
+        
+                # Extract attachments for inbox list
+                attachments = extract_attachments(message['payload'])
 
                 detailed_messages.append({
                     'id': message['id'],
@@ -794,7 +757,8 @@ def get_inbox_messages():
                     'date': date,
                     'snippet': message.get('snippet', ''),
                     'body': body[:500],
-                    'isUnread': is_unread
+                    'isUnread': is_unread,
+                    'attachments': attachments  # ADD THIS LINE
                 })
 
             except Exception as e:
@@ -810,6 +774,33 @@ def get_inbox_messages():
     except Exception as e:
         print(f"Inbox fetch error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+
+def extract_attachments(payload):
+    """Extract attachment metadata from message payload"""
+    if not payload:
+        return []
+    
+    attachments = []
+    
+    def traverse(parts):
+        if not parts:
+            return
+        for part in parts:
+            if part.get('filename') and part.get('body', {}).get('attachmentId'):
+                attachments.append({
+                    'filename': part['filename'],
+                    'mimeType': part.get('mimeType'),
+                    'size': part.get('body', {}).get('size', 0),
+                    'attachmentId': part['body']['attachmentId']
+                })
+            if part.get('parts'):
+                traverse(part['parts'])
+    
+    if payload.get('parts'):
+        traverse(payload['parts'])
+    
+    return attachments
 
 @app.route('/api/scheduled/messages', methods=['GET'])
 def get_scheduled_messages():
@@ -829,12 +820,10 @@ def get_scheduled_messages():
         for doc in docs_stream:
             data = doc.to_dict()
             
-            # Convert Firestore timestamp/datetime to ISO string
             scheduled_at = data.get('scheduled_at')
             if hasattr(scheduled_at, 'isoformat'):
                 scheduled_at = scheduled_at.isoformat()
             
-            # Format to match the structure used by the frontend message list
             scheduled_messages.append({
                 'id': doc.id, # Firestore ID
                 'draft_id': data.get('draft_id'),
@@ -847,14 +836,12 @@ def get_scheduled_messages():
                 'isScheduled': True # Flag for frontend
             })
 
-        # Sort by scheduled time (earliest first) in Python
-        # (Avoids needing a composite index in Firestore immediately)
         scheduled_messages.sort(key=lambda x: x['date'])
 
         return jsonify({
             'success': True,
             'messages': scheduled_messages,
-            'nextPageToken': None # No pagination for simplicity in this view
+            'nextPageToken': None
         })
 
     except Exception as e:
@@ -878,14 +865,12 @@ def get_message_detail(message_id):
             format='full'
         ).execute()
 
-        # Extract headers
         headers = message['payload'].get('headers', [])
         subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
         from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
         to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
         date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
         
-        # Extract full body
         body = ''
         body_html = ''
         body_plain = ''
@@ -900,7 +885,7 @@ def get_message_detail(message_id):
                     body_html = base64.urlsafe_b64decode(
                         part['body']['data']
                     ).decode('utf-8', errors='ignore')
-                # Handle multipart/alternative nested structure
+
                 elif part['mimeType'].startswith('multipart/') and 'parts' in part:
                     for subpart in part['parts']:
                         if subpart['mimeType'] == 'text/plain' and 'data' in subpart['body']:
@@ -921,11 +906,9 @@ def get_message_detail(message_id):
             else:
                 body_plain = content
         
-        # Prefer HTML, fallback to Plain Text
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
-        # Mark as read
         service.users().messages().modify(
             userId='me',
             id=message_id,
@@ -962,7 +945,6 @@ def summarize_email_route():
         return jsonify({'status': 'ok'}), 200
 
     try:
-        # force=True tells Flask to ignore the Content-Type header and try to parse JSON anyway
         data = request.get_json(force=True, silent=True) 
         
         if not data:
@@ -1001,7 +983,6 @@ def download_attachment():
     try:
         service = get_gmail_service_from_session()
         
-        # Call Gmail API to get the specific attachment data
         attachment = service.users().messages().attachments().get(
             userId='me', 
             messageId=message_id, 
@@ -1010,7 +991,6 @@ def download_attachment():
 
         file_data = base64.urlsafe_b64decode(attachment['data'].encode('UTF-8'))
         
-        # Create a file-like object in memory
         return send_file(
             io.BytesIO(file_data),
             as_attachment=True,
@@ -1052,22 +1032,18 @@ def run_schedule_checker():
             print(f"\n{'='*60}")
             print(f"🔍 Checking for due emails at {now_utc}")
             
-            # Query only by status (doesn't require composite index)
             docs_stream = get_db().collection('scheduled_emails')\
                 .where('status', '==', 'pending')\
                 .stream()
             
-            # Filter by time in Python instead of Firestore
             pending_emails = []
             for doc in docs_stream:
                 data = doc.to_dict()
                 scheduled_at = data.get('scheduled_at')
                 
-                # Check if due
                 if scheduled_at and scheduled_at <= now_utc:
                     pending_emails.append(doc)
             
-            # Check count
             if len(pending_emails) > 0:
                 print(f"🔎 Found {len(pending_emails)} due email(s) in database!")
             else:
@@ -1076,7 +1052,6 @@ def run_schedule_checker():
                 time.sleep(60)
                 continue
             
-            # Process each email
             for doc in pending_emails:
                 data = doc.to_dict()
                 email_id = doc.id
@@ -1086,7 +1061,6 @@ def run_schedule_checker():
                 print(f"   Draft ID: {data.get('draft_id')}")
                 
                 try:
-                    # Reconstruct Credentials
                     creds_data = data.get('credentials')
                     if not creds_data:
                         raise Exception("No credentials found in document")
@@ -1101,7 +1075,6 @@ def run_schedule_checker():
                         scopes=creds_data['scopes']
                     )
                     
-                    # Send the Draft
                     print(f"   2️⃣ Building Gmail service...")
                     service = build('gmail', 'v1', credentials=creds)
                     
@@ -1115,7 +1088,6 @@ def run_schedule_checker():
                         body={'id': draft_id}
                     ).execute()
                     
-                    # Update Status to 'sent'
                     print(f"   4️⃣ Updating status to 'sent'...")
                     get_db().collection('scheduled_emails').document(email_id).update({
                         'status': 'sent',
@@ -1145,7 +1117,6 @@ def run_schedule_checker():
             
             print(f"{'='*60}\n")
             
-            # Sleep for 60 seconds before checking again
             print(f"😴 Sleeping for 60 seconds...")
             time.sleep(60)
             
@@ -1168,7 +1139,6 @@ scheduler_thread.start()
 
 print(f"✅ Scheduler thread started: {scheduler_thread.is_alive()}")
 
-# Add a health check endpoint to verify the thread is running
 @app.route('/api/scheduler/health', methods=['GET'])
 def scheduler_health():
     return jsonify({

@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-// 1. ADD 'Search' to imports
 import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar, Menu, LogOut, OctagonAlert, Search } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
 const GmailComposeApp = () => {
-  // ... existing state ...
+  const activeLabelRef = useRef('INBOX');
+  const observer = useRef();
+  // Authentication
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [userEmail, setUserEmail] = useState('');
   const [userAvatar, setUserAvatar] = useState('');
   const [status, setStatus] = useState('');
@@ -17,7 +19,7 @@ const GmailComposeApp = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
 
-  // ... existing compose fields ...
+  // Compose Fields
   const [toField, setToField] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
@@ -37,8 +39,9 @@ const GmailComposeApp = () => {
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [nextPageToken, setNextPageToken] = useState(null);
+  const [messageCache, setMessageCache] = useState({});
 
-  // ... existing reply/cc/mediator/ai/audio/file/schedule state ...
+  // Reply
   const [showReplyMenu, setShowReplyMenu] = useState(false);
   const [inlineReplyOpen, setInlineReplyOpen] = useState(false);
   const [replyBody, setReplyBody] = useState('');
@@ -96,7 +99,6 @@ const GmailComposeApp = () => {
     else return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
   const handleDownload = async (messageId, attachmentId, filename) => {
-     // ... same as before
      try {
       const response = await fetch(`${API_BASE}/email/attachment?messageId=${messageId}&attachmentId=${attachmentId}&filename=${encodeURIComponent(filename)}`, {
         headers: { 'Content-Type': 'application/json' },
@@ -128,23 +130,30 @@ const GmailComposeApp = () => {
   }, []);
 
 
-  // --- UPDATED LOAD INBOX FUNCTION TO SUPPORT SEARCH ---
-  const loadInbox = useCallback(async (pageToken = null, label = 'INBOX', query = null) => {
+  const loadInbox = useCallback(async (pageToken = null, label = 'INBOX', query = null, useCache = false) => {
     setLoadingMessages(true);
+
+    // 1. CACHE CHECK
+    // Only use cache if requested, we are on page 1 (no pageToken), and not searching
+    if (useCache && !pageToken && !query && messageCache[label]) {
+        console.log(`Loading ${label} from cache`);
+        setMessages(messageCache[label].messages);
+        setNextPageToken(messageCache[label].nextPageToken);
+        setLoadingMessages(false);
+        return; 
+    }
+
     try {
       let url;
       
-      // 1. Search Logic
       if (query) {
         url = pageToken 
           ? `${API_BASE}/inbox/messages?pageToken=${pageToken}&q=${encodeURIComponent(query)}`
           : `${API_BASE}/inbox/messages?q=${encodeURIComponent(query)}`;
       } 
-      // 2. Scheduled Logic
       else if (label === 'SCHEDULED') {
         url = `${API_BASE}/scheduled/messages`;
       } 
-      // 3. Standard Labels (Inbox, Sent, Spam)
       else {
         url = pageToken 
           ? `${API_BASE}/inbox/messages?pageToken=${pageToken}&label=${label}` 
@@ -153,17 +162,39 @@ const GmailComposeApp = () => {
         
       const response = await fetch(url, { credentials: 'include' });
       const data = await response.json();
+
+      if (!query && activeLabelRef.current !== label) {
+          console.log(`Ignoring stale ${label} data, user is now on ${activeLabelRef.current}`);
+          return; // STOP! Do not update state.
+      }
+      
       if (data.success) {
+        const newMessages = pageToken ? (messages) => [...messages, ...data.messages] : data.messages;
+        
+        // 2. UPDATE STATE
         setMessages(prev => pageToken ? [...prev, ...data.messages] : data.messages);
         setNextPageToken(data.nextPageToken);
+
+        // 3. SAVE TO CACHE (Only if not searching and not paging)
+        if (!query && !pageToken) {
+            setMessageCache(prev => ({
+                ...prev,
+                [label]: { 
+                    messages: data.messages, 
+                    nextPageToken: data.nextPageToken 
+                }
+            }));
+        }
       }
     } catch (error) {
       console.error('Failed to load messages:', error);
       setStatus('Failed to load messages');
     } finally {
-      setLoadingMessages(false);
+      if (query || activeLabelRef.current === label) {
+           setLoadingMessages(false);
+       }
     }
-  }, []);
+  }, [messageCache]); // Add messageCache to dependencies
 
   const checkAuthStatus = useCallback(async () => {
     try {
@@ -172,8 +203,25 @@ const GmailComposeApp = () => {
       setIsAuthenticated(Boolean(data.authenticated));
       if (data.email) setUserEmail(data.email);
       if (data.picture) setUserAvatar(data.picture);
+      
       if (data.authenticated) {
         const hash = window.location.hash;
+        
+        // --- START FIX ---
+        // Explicitly handle the #compose hash so we don't redirect to Inbox
+        if (hash === '#compose') {
+           setShowCompose(true);
+           setCurrentView('compose');
+           return; 
+        }
+        // --- END FIX ---
+
+        if (hash.startsWith('#message-')) {
+            // Optional: You could ensure currentView is set to 'message' here
+            // but usually we just want to let the existing state persist
+            return; 
+        }
+        
         if (hash === '#sent') { setCurrentView('sent'); loadInbox(null, 'SENT'); }
         else if (hash === '#scheduled') { setCurrentView('scheduled'); loadInbox(null, 'SCHEDULED'); }
         else if (hash === '#spam') { setCurrentView('spam'); loadInbox(null, 'SPAM'); }
@@ -182,10 +230,37 @@ const GmailComposeApp = () => {
     } catch (error) {
       console.error('Auth check failed:', error);
     }
+    finally {
+      setIsAuthChecking(false);
+    }
   }, [loadInbox]);
 
+  const lastMessageElementRef = useCallback(node => {
+    if (loadingMessages) return; // Don't trigger if already loading
+    
+    if (observer.current) observer.current.disconnect();
+    
+    observer.current = new IntersectionObserver(entries => {
+      // If the last element is visible AND we have a next page
+      if (entries[0].isIntersecting && nextPageToken) {
+        
+        // Determine exactly what to load based on current view
+        if (isSearching) {
+            loadInbox(nextPageToken, null, searchQuery);
+        } else if (currentView === 'spam') {
+            loadInbox(nextPageToken, 'SPAM');
+        } else if (currentView === 'sent') {
+            loadInbox(nextPageToken, 'SENT');
+        } else if (currentView === 'inbox') {
+            loadInbox(nextPageToken, 'INBOX');
+        }
+      }
+    });
+    
+    if (node) observer.current.observe(node);
+  }, [loadingMessages, nextPageToken, loadInbox, isSearching, searchQuery, currentView]);
+
   const loadMessageDetail = useCallback(async (messageId, pushHistory = true) => {
-    // ... same as before
     setSummary(''); 
     setShowSummary(false);
     setIsSummarizing(false);
@@ -193,7 +268,9 @@ const GmailComposeApp = () => {
       const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, { credentials: 'include' });
       const data = await response.json();
       if (data.success) {
-        const attachments = extractAttachments(data.message.payload);
+        // --- CHANGED: Use the attachments sent from backend directly ---
+        const attachments = data.message.attachments || []; 
+        
         const complete = { ...data.message, threadId: data.message.threadId || data.message.id, attachments: attachments };
         setSelectedMessage(complete);
         setCurrentView('message');
@@ -225,27 +302,45 @@ const GmailComposeApp = () => {
     return attachments;
   };
 
-  useEffect(() => { checkAuthStatus(); }, [checkAuthStatus]);
+  useEffect(() => { 
+    checkAuthStatus(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // --- UPDATED NAVIGATION TO HANDLE SEARCH CLEARING ---
   const handleNavigation = (view) => {
     setCurrentView(view);
     setShowCompose(false);
     setSelectedMessage(null);
     setIsMobileMenuOpen(false);
     
-    // Reset search when navigating via sidebar
     setSearchQuery('');
     setIsSearching(false);
 
+    // --- KEY FIX: Clear messages immediately so old content doesn't show ---
+    setMessages([]); 
+    setLoadingMessages(true);
+    // ---------------------------------------------------------------------
+
     pushInboxState(false, view);
-    if (view === 'inbox') loadInbox(null, 'INBOX');
-    else if (view === 'sent') loadInbox(null, 'SENT');
-    else if (view === 'scheduled') loadInbox(null, 'SCHEDULED');
-    else if (view === 'spam') loadInbox(null, 'SPAM');
+
+    // Determine label and load with Cache enabled
+    let label = 'INBOX';
+    if (view === 'sent') label = 'SENT';
+    else if (view === 'scheduled') label = 'SCHEDULED';
+    else if (view === 'spam') label = 'SPAM';
+
+    // Pass 'true' as the 4th argument to enable caching
+    activeLabelRef.current = label;
+    // -----------------------
+
+    setMessages([]); // Clear old messages
+    setLoadingMessages(true);
+    pushInboxState(false, view);
+    
+    // Pass true for cache
+    loadInbox(null, label, null, true);
   };
 
-  // ... Mediator effects same as before ...
   useEffect(() => {
     if (!isAuthenticated) return;
     let mounted = true;
@@ -295,7 +390,6 @@ const GmailComposeApp = () => {
     return () => window.removeEventListener('popstate', onPopState);
   }, [loadInbox]);
 
-  // ... Contact suggestions, keydown, auth, logout, summarize, compose, reply handlers (same as before) ...
   useEffect(() => {
     let currentText = ''; if (activeField === 'to') currentText = toField; else if (activeField === 'cc') currentText = ccField; else if (activeField === 'bcc') currentText = bccField; const term = getLastTerm(currentText);
     if (!activeField || term.length < 2) { setSuggestions([]); return; } const controller = new AbortController(); const searchContacts = async () => { try { const response = await fetch(`${API_BASE}/contacts/search?q=${encodeURIComponent(term)}`, { credentials: 'include', signal: controller.signal }); const data = await response.json(); setSuggestions(data.contacts || []); setSelectedIndex(-1); } catch (error) { if (error.name !== 'AbortError') console.error('Contact search failed:', error); } }; const id = setTimeout(searchContacts, 300); return () => { clearTimeout(id); controller.abort(); };
@@ -304,19 +398,43 @@ const GmailComposeApp = () => {
   const selectSuggestion = (contact) => { if (activeField === 'to') setToField(prev => replaceLastTerm(prev, contact.email)); else if (activeField === 'cc') setCcField(prev => replaceLastTerm(prev, contact.email)); else if (activeField === 'bcc') setBccField(prev => replaceLastTerm(prev, contact.email)); setSuggestions([]); setSelectedIndex(-1); };
   const handleBlur = () => { setTimeout(() => { setActiveField(null); setSuggestions([]); }, 200); };
   const handleAuth = () => { setStatus('Redirecting...'); window.location.href = `${API_BASE}/auth/google/login`; };
-  const handleLogout = async () => { try { await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }); setIsAuthenticated(false); setUserEmail(''); setShowCompose(false); setStatus('Logged out'); setTimeout(() => setStatus(''), 2000); pushInboxState(true); } catch (error) { console.error('Logout failed:', error); } };
+  const handleLogout = async () => { 
+    try { 
+      await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }); 
+      
+      // 1. Clear Data Cache (Prevents data leaks/glitches)
+      setMessageCache({});
+      setMessages([]);
+      
+      // 2. Reset Auth State
+      setIsAuthenticated(false); 
+      setUserEmail(''); 
+      setShowCompose(false); 
+      
+      setStatus('Logged out'); 
+      setTimeout(() => setStatus(''), 2000); 
+      pushInboxState(true); 
+    } catch (error) { 
+      console.error('Logout failed:', error); 
+    } 
+  };
   const handleSummarize = async () => { if (!selectedMessage) return; setIsSummarizing(true); try { const bodyText = selectedMessage.isHtml ? stripHtml(selectedMessage.body) : selectedMessage.body; const textToSummarize = `Subject: ${selectedMessage.subject}\n\n${bodyText}`; const response = await fetch(`${API_BASE}/email/summarize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ text: textToSummarize }) }); const data = await response.json(); if (data.success) { setSummary(data.summary); setShowSummary(true); } else { setStatus('Failed to generate summary'); setTimeout(() => setStatus(''), 2000); } } catch (error) { console.error('Summarize failed:', error); setStatus('Error summarizing'); setTimeout(() => setStatus(''), 2000); } finally { setIsSummarizing(false); } };
   const handleCompose = () => { setShowCompose(true); setCurrentView('compose'); setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); setAiInstruction(''); setAiMode('voice'); setShowMobileAiMenu(false); setShowMobileTextInput(false); setIsMobileMenuOpen(false); window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose'); };
   const handleReplyNew = () => { setShowReplyMenu(false); if (!selectedMessage) return; const emailMatch = selectedMessage.from.match(/<([^>]+)>/); const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from; setToField(replyToEmail); setSubject(selectedMessage.subject || ''); setBody(''); setAiInstruction(''); setAiMode('voice'); setShowMobileAiMenu(false); setShowMobileTextInput(false); setShowCompose(true); setCurrentView('compose'); window.history.pushState({ view: 'compose' }, '', window.location.pathname + '#compose'); };
   const handleReplyClick = () => setShowReplyMenu(true);
   const handleReplyThread = () => { setShowReplyMenu(false); setInlineReplyOpen(true); setTimeout(() => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }, 100); };
   const sendInlineReply = async () => { if (!replyBody.trim() || !selectedMessage) return; setLoading(true); setStatus('Sending reply...'); try { const emailMatch = selectedMessage.from.match(/<([^>]+)>/); const replyToEmail = emailMatch ? emailMatch[1] : selectedMessage.from; const formData = new FormData(); formData.append('to', replyToEmail); formData.append('subject', selectedMessage.subject); formData.append('body', replyBody); formData.append('threadId', selectedMessage.threadId); formData.append('messageId', selectedMessage.id); attachments.forEach((file) => formData.append('attachments', file)); const response = await fetch(`${API_BASE}/email/send`, { method: 'POST', credentials: 'include', body: formData }); const data = await response.json(); if (data.success) { setStatus('Reply sent!'); setReplyBody(''); setAttachments([]); setInlineReplyOpen(false); } else { setStatus('Failed: ' + (data.error || 'unknown')); } } catch (error) { console.error(error); setStatus('Error: ' + error.message); } finally { setLoading(false); setTimeout(() => setStatus(''), 2000); } };
-  const handleSend = async () => { if (!toField || !subject) { setStatus('Please fill in recipient and subject'); setTimeout(() => setStatus(''), 2000); return; } setLoading(true); setStatus(scheduleTime ? 'Scheduling email...' : 'Sending email...'); try { const formData = new FormData(); formData.append('to', toField); formData.append('subject', subject); formData.append('body', body); if (ccField) formData.append('cc', ccField); if (bccField) formData.append('bcc', bccField); attachments.forEach((file) => formData.append('attachments', file)); if (scheduleTime) { formData.append('scheduledTime', new Date(scheduleTime).toISOString()); } const response = await fetch(`${API_BASE}/email/send`, { method: 'POST', credentials: 'include', body: formData }); const data = await response.json(); if (data.success) { setStatus(data.scheduled ? 'Email successfully scheduled!' : 'Email sent successfully!'); setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); setAttachments([]); setScheduleTime(''); setShowScheduleInput(false); if (fileInputRef.current) fileInputRef.current.value = ""; setShowCompose(false); handleNavigation('inbox'); } else { setStatus('Failed: ' + (data.error || 'unknown')); } } catch (error) { console.error(error); setStatus('Error: ' + error.message); } finally { setLoading(false); setTimeout(() => setStatus(''), 3000); } };
+  const handleSend = async () => { if (!toField || !subject) { setStatus('Please fill in recipient and subject'); setTimeout(() => setStatus(''), 2000); return; } setLoading(true); setStatus(scheduleTime ? 'Scheduling email...' : 'Sending email...'); try { const formData = new FormData(); formData.append('to', toField); formData.append('subject', subject); formData.append('body', body); if (ccField) formData.append('cc', ccField); if (bccField) formData.append('bcc', bccField); attachments.forEach((file) => formData.append('attachments', file)); if (scheduleTime) { formData.append('scheduledTime', new Date(scheduleTime).toISOString()); } const response = await fetch(`${API_BASE}/email/send`, { method: 'POST', credentials: 'include', body: formData }); const data = await response.json(); if (data.success) { setStatus(data.scheduled ? 'Email successfully scheduled!' : 'Email sent successfully!'); setToField(''); setCcField(''); setBccField(''); setSubject(''); setBody(''); 
+    setMessageCache(prev => {
+        const newCache = { ...prev };
+        delete newCache['SENT']; 
+        return newCache;
+    });
+    setAttachments([]); setScheduleTime(''); setShowScheduleInput(false); if (fileInputRef.current) fileInputRef.current.value = ""; setShowCompose(false); handleNavigation('inbox'); } else { setStatus('Failed: ' + (data.error || 'unknown')); } } catch (error) { console.error(error); setStatus('Error: ' + error.message); } finally { setLoading(false); setTimeout(() => setStatus(''), 3000); } };
   const handleAudioToggle = async () => { setShowMobileTextInput(false); if (!isRecording) { try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); streamRef.current = stream; const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' }); audioChunksRef.current = []; mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunksRef.current.push(event.data); }; mediaRecorder.onstop = async () => { const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' }); const formData = new FormData(); formData.append('audio', audioBlob, 'recording.webm'); setIsAiProcessing(true); try { const response = await fetch(`${API_BASE}/audio/transcribe`, { method: 'POST', credentials: 'include', body: formData }); const data = await response.json(); if (data.success) { await fetch(`${API_BASE}/mediator/advance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ input: data.text }) }); } } catch (err) { console.error('Transcription failed', err); } finally { setIsAiProcessing(false); } }; mediaRecorder.start(); mediaRecorderRef.current = mediaRecorder; setIsRecording(true); } catch (err) { console.error('Failed to get audio', err); } } else { if (mediaRecorderRef.current) mediaRecorderRef.current.stop(); if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); mediaRecorderRef.current = null; streamRef.current = null; setIsRecording(false); } };
   const handleAiTextSubmit = async () => { if (!aiInstruction.trim()) return; setIsAiProcessing(true); if (showMobileTextInput) setShowMobileTextInput(false); try { await fetch(`${API_BASE}/mediator/advance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ input: aiInstruction }) }); setAiInstruction(''); } catch (err) { console.error('Text submission failed', err); } finally { setIsAiProcessing(false); } };
   const handleMobileFabClick = () => { if (isRecording) handleAudioToggle(); else if (showMobileTextInput) setShowMobileTextInput(false); else setShowMobileAiMenu(prev => !prev); };
 
-  // --- NEW: SEARCH SUBMIT HANDLER ---
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -335,6 +453,19 @@ const GmailComposeApp = () => {
   };
 
   const renderSuggestions = (fieldType) => { if (activeField !== fieldType || suggestions.length === 0) return null; return ( <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto"> {suggestions.map((contact, index) => ( <div key={contact.email} onMouseDown={(e) => { e.preventDefault(); selectSuggestion(contact); }} className={`px-4 py-3 cursor-pointer transition-all duration-150 border-b last:border-0 ${index === selectedIndex ? 'bg-gradient-to-r from-violet-50 to-purple-50 border-l-4 border-violet-500' : 'hover:bg-slate-50'}`}> <div className="font-semibold text-slate-800">{contact.name}</div> <div className="text-sm text-slate-500">{contact.email}</div> </div> ))} </div> ); };
+
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="animate-pulse flex flex-col items-center">
+          <div className="p-5 bg-gradient-to-br from-violet-500 to-purple-600 rounded-2xl mb-6 shadow-xl">
+             <Mail className="w-10 h-10 text-white" />
+          </div>
+          <div className="h-4 w-32 bg-slate-200 rounded"></div>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) return (
     <div className="min-h-screen bg-gradient-to-br from-violet-100 via-purple-50 to-fuchsia-100 flex items-center justify-center p-4">
@@ -463,49 +594,55 @@ const GmailComposeApp = () => {
           
           {/* List Views */}
           {(currentView === 'inbox' || currentView === 'sent' || currentView === 'scheduled' || currentView === 'spam') && (
-             <div className="max-w-4xl mx-auto p-4 md:p-8 pb-24 md:pb-8">
+             <div className="max-w-4xl mx-auto px-2 py-4 md:p-8 pb-24 md:pb-8">
                 
                 {/* --- HEADER & SEARCH BAR --- */}
                 <div className="flex flex-col md:flex-row md:items-center gap-4 mb-6">
-                  {/* Title (Hidden on search to save space on mobile, or keep it) */}
+                  
+                  {/* Title */}
                   <h2 className="text-2xl font-bold text-slate-800 capitalize md:w-32">
                     {isSearching ? 'Results' : currentView}
                   </h2>
 
-                  {/* Search Bar Input */}
-                  <form onSubmit={handleSearchSubmit} className="flex-1 relative">
-                    <div className="relative group">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Search className="h-5 w-5 text-slate-400 group-focus-within:text-violet-500 transition-colors" />
-                      </div>
-                      <input 
-                        type="text" 
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search mail..." 
-                        className="block w-full pl-10 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl leading-5 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition-shadow shadow-sm"
-                      />
-                      {searchQuery && (
-                        <button type="button" onClick={clearSearch} className="absolute inset-y-0 right-0 pr-3 flex items-center">
-                          <X className="h-4 w-4 text-slate-400 hover:text-slate-600" />
-                        </button>
-                      )}
-                    </div>
-                  </form>
+                  {/* WRAPPER: Groups Search + Refresh side-by-side on all screens */}
+                  <div className="flex flex-1 gap-2 w-full">
+                      
+                      {/* Search Bar Input */}
+                      <form onSubmit={handleSearchSubmit} className="flex-1 relative">
+                        <div className="relative group">
+                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <Search className="h-5 w-5 text-slate-400 group-focus-within:text-violet-500 transition-colors" />
+                          </div>
+                          <input 
+                            type="text" 
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search mail..." 
+                            className="block w-full pl-10 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl leading-5 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition-shadow shadow-sm"
+                          />
+                          {searchQuery && (
+                            <button type="button" onClick={clearSearch} className="absolute inset-y-0 right-0 pr-3 flex items-center">
+                              <X className="h-4 w-4 text-slate-400 hover:text-slate-600" />
+                            </button>
+                          )}
+                        </div>
+                      </form>
 
-                  <button 
-                    onClick={() => {
-                       // Reload based on current state
-                       if (isSearching) loadInbox(null, null, searchQuery);
-                       else if (currentView === 'scheduled') loadInbox(null, 'SCHEDULED');
-                       else if (currentView === 'spam') loadInbox(null, 'SPAM');
-                       else loadInbox(null, currentView === 'sent' ? 'SENT' : 'INBOX');
-                    }} 
-                    disabled={loadingMessages} 
-                    className="p-2.5 bg-white border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-violet-600 rounded-xl shadow-sm transition-all self-end md:self-auto"
-                  >
-                    <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
-                  </button>
+                      {/* Refresh Button - Now sits next to search bar */}
+                      <button 
+                        onClick={() => {
+                            const label = currentView === 'sent' ? 'SENT' : currentView === 'scheduled' ? 'SCHEDULED' : currentView === 'spam' ? 'SPAM' : 'INBOX';
+                            if (!isSearching) setMessages([]); 
+                            if (isSearching) loadInbox(null, null, searchQuery, false);
+                            else loadInbox(null, label, null, false);
+                        }}
+                        disabled={loadingMessages} 
+                        className="p-2.5 bg-white border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-violet-600 rounded-xl shadow-sm transition-all shrink-0"
+                      >
+                        <RefreshCw className={`w-5 h-5 ${loadingMessages ? 'animate-spin' : ''}`} />
+                      </button>
+
+                  </div>
                 </div>
 
                 {/* Message List */}
@@ -538,7 +675,7 @@ const GmailComposeApp = () => {
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between items-baseline mb-1 gap-2">
                             <span className={`font-semibold text-sm text-slate-900 truncate flex-1 ${message.isUnread ? 'font-bold' : ''}`}>
-                               {displayLabel}
+                              {displayLabel}
                             </span>
                             <div className={`flex items-center gap-1.5 text-xs flex-shrink-0 ${isScheduled ? 'text-emerald-600 font-bold bg-emerald-50 px-2 py-1 rounded-full' : (isSpam ? 'text-red-500 font-bold bg-red-50 px-2 py-1 rounded-full' : 'text-slate-500')}`}>
                               {isSpam && <OctagonAlert className="w-3 h-3"/>}
@@ -546,27 +683,21 @@ const GmailComposeApp = () => {
                               <span>{isScheduled ? `Scheduled: ${formatDate(message.date)}` : (isSpam ? 'Spam' : formatDate(message.date))}</span>
                             </div>
                           </div>
-                          <div className={`text-sm mb-0.5 truncate ${message.isUnread ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>{message.subject}</div>
+                          <div className={`text-sm mb-0.5 truncate ${message.isUnread ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>
+                            {message.subject}
+                            {message.attachments && message.attachments.length > 0 && (
+                              <Paperclip className="w-3 h-3 inline ml-1 text-slate-400" />
+                            )}
+                          </div>
                           <div className="text-sm text-slate-500 line-clamp-1">{message.snippet}</div>
                         </div>
                       </div>
                     );
                   })}
                 </div>
-                
-                {nextPageToken && currentView !== 'scheduled' && (
-                  <div className="py-6 text-center">
-                    <button 
-                      onClick={() => {
-                        if (isSearching) loadInbox(nextPageToken, null, searchQuery);
-                        else if (currentView === 'spam') loadInbox(nextPageToken, 'SPAM');
-                        else loadInbox(nextPageToken, currentView === 'sent' ? 'SENT' : 'INBOX');
-                      }} 
-                      disabled={loadingMessages} 
-                      className="text-slate-500 font-medium hover:text-violet-600 bg-white border border-slate-200 px-6 py-2 rounded-full shadow-sm"
-                    >
-                      Load More
-                    </button>
+                {loadingMessages && messages.length > 0 && (
+                  <div className="py-4 flex justify-center w-full">
+                    <RefreshCw className="w-6 h-6 text-violet-500 animate-spin" />
                   </div>
                 )}
              </div>
@@ -574,22 +705,27 @@ const GmailComposeApp = () => {
 
           {/* ... MESSAGE DETAIL VIEW & COMPOSE VIEW RENDER LOGIC REMAINS THE SAME ... */}
           {currentView === 'message' && selectedMessage && (
-            <div className="p-4 md:p-8 max-w-4xl mx-auto h-full flex flex-col pb-24 md:pb-8">
-               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex-1 flex flex-col overflow-hidden">
-                 <div className="flex items-center justify-between p-4 border-b border-slate-100">
+            <div className="px-2 pt-2 md:p-8 max-w-4xl mx-auto h-full flex flex-col">
+     
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex-1 flex flex-col overflow-hidden">
+                {/* Header section (Back button, etc) remains the same */}
+                <div className="flex items-center justify-between p-4 border-b border-slate-100">
                     <button onClick={() => { handleNavigation(window.location.hash.includes('spam') ? 'spam' : 'inbox'); pushInboxState(); }} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors">
                       <ArrowLeft className="w-5 h-5" /> Back
                     </button>
                     <div className="flex gap-2">
-                       <button onClick={handleSummarize} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 font-medium text-sm">
+                      <button onClick={handleSummarize} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 font-medium text-sm">
                           {isSummarizing ? <RefreshCw className="w-4 h-4 animate-spin"/> : <Sparkles className="w-4 h-4"/>} Summarize
-                       </button>
-                       <button onClick={handleReplyClick} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium text-sm">
+                      </button>
+                      <button onClick={handleReplyClick} className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium text-sm">
                           <Reply className="w-4 h-4" /> Reply
-                       </button>
+                      </button>
                     </div>
-                 </div>
-                 <div className="p-6 overflow-y-auto flex-1">
+                </div>
+
+                {/* 2. Modified Content Area: */}
+                {/* - Added 'pb-24' here. This ensures the text scrolls ABOVE the floating buttons, but the card itself stays full height. */}
+                <div className="p-6 overflow-y-auto flex-1 pb-24">
                     <h2 className="text-2xl font-bold text-slate-900 mb-6">{selectedMessage.subject}</h2>
                     <div className="flex gap-4 mb-6">
                        <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold shadow-sm ${getAvatarData(extractSenderName(selectedMessage.from)).colorClass}`}>
@@ -683,13 +819,50 @@ const GmailComposeApp = () => {
                   </div>
                   <div className="p-4">
                     {aiMode === 'voice' ? (
-                      <button onClick={handleAudioToggle} disabled={isAiProcessing} className={`w-full py-3 rounded-lg font-bold text-white transition-all flex items-center justify-center gap-2 ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                        {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}{isRecording ? 'Stop Recording' : 'Tap to Speak'}
+                      <button 
+                        onClick={handleAudioToggle} 
+                        // Disable button if processing
+                        disabled={isAiProcessing} 
+                        className={`w-full py-3 rounded-lg font-bold text-white transition-all flex items-center justify-center gap-2 ${
+                          isRecording ? 'bg-red-500 animate-pulse' : 
+                          isAiProcessing ? 'bg-indigo-400 cursor-not-allowed' : // Light indigo when processing
+                          'bg-indigo-600 hover:bg-indigo-700'
+                        }`}
+                      >
+                        {isAiProcessing ? (
+                          // SHOW SPINNER IF PROCESSING
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>Processing...</span>
+                          </>
+                        ) : isRecording ? (
+                          <>
+                            <Square className="w-4 h-4" />
+                            <span>Stop Recording</span>
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="w-4 h-4" />
+                            <span>Tap to Speak</span>
+                          </>
+                        )}
                       </button>
                     ) : (
                       <div className="flex gap-2">
-                        <input value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} placeholder="Describe email..." className="flex-1 px-3 py-2 rounded-lg border border-indigo-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                        <button onClick={handleAiTextSubmit} disabled={isAiProcessing || !aiInstruction.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold">Generate</button>
+                        <input 
+                          value={aiInstruction} 
+                          onChange={(e) => setAiInstruction(e.target.value)} 
+                          onKeyDown={(e) => e.key === 'Enter' && handleAiTextSubmit()}
+                          placeholder="Describe email..." 
+                          className="flex-1 px-3 py-2 rounded-lg border border-indigo-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+                        />
+                        <button 
+                          onClick={handleAiTextSubmit} 
+                          disabled={isAiProcessing || !aiInstruction.trim()} 
+                          className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold min-w-[100px] flex items-center justify-center"
+                        >
+                          {isAiProcessing ? <RefreshCw className="w-4 h-4 animate-spin"/> : 'Generate'}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -740,29 +913,58 @@ const GmailComposeApp = () => {
                 </div>
               </div>
               <div className="md:hidden">
-                 {showMobileTextInput ? (
+                {showMobileTextInput ? (
                     <div className="p-4 bg-slate-50 border-t border-slate-200 animate-in slide-in-from-bottom">
-                       <div className="flex gap-2">
-                          <textarea value={aiInstruction} onChange={(e) => setAiInstruction(e.target.value)} className="flex-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-20" placeholder="Describe email..." autoFocus />
+                      <div className="flex gap-2">
+                          <textarea 
+                            value={aiInstruction} 
+                            onChange={(e) => setAiInstruction(e.target.value)} 
+                            className="flex-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-20" 
+                            placeholder="Describe email..." 
+                            autoFocus 
+                          />
                           <div className="flex flex-col gap-2">
-                             <button onClick={() => setShowMobileTextInput(false)} className="p-2 bg-slate-200 rounded-lg text-slate-600"><ChevronUp className="w-5 h-5 rotate-180"/></button>
-                             <button onClick={handleAiTextSubmit} className="flex-1 bg-indigo-600 text-white rounded-lg flex items-center justify-center"><Send className="w-5 h-5"/></button>
+                            <button onClick={() => setShowMobileTextInput(false)} className="p-2 bg-slate-200 rounded-lg text-slate-600"><ChevronUp className="w-5 h-5 rotate-180"/></button>
+                            <button 
+                                onClick={handleAiTextSubmit} 
+                                disabled={isAiProcessing}
+                                className="flex-1 bg-indigo-600 text-white rounded-lg flex items-center justify-center disabled:bg-indigo-400"
+                            >
+                                {isAiProcessing ? <RefreshCw className="w-5 h-5 animate-spin"/> : <Send className="w-5 h-5"/>}
+                            </button>
                           </div>
-                       </div>
+                      </div>
                     </div>
-                 ) : (
+                ) : (
                     <div className="absolute bottom-6 right-6 flex flex-col items-end gap-3 pointer-events-none">
-                       {showMobileAiMenu && (
+                      {showMobileAiMenu && !isAiProcessing && (
                           <>
-                             <button onClick={() => { setShowMobileTextInput(true); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Keyboard className="w-5 h-5"/><span className="text-xs font-bold">Type</span></button>
-                             <button onClick={() => { handleAudioToggle(); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Mic className="w-5 h-5"/><span className="text-xs font-bold">Speak</span></button>
+                            <button onClick={() => { setShowMobileTextInput(true); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Keyboard className="w-5 h-5"/><span className="text-xs font-bold">Type</span></button>
+                            <button onClick={() => { handleAudioToggle(); setShowMobileAiMenu(false); }} className="pointer-events-auto bg-white text-indigo-600 p-3 rounded-full shadow-lg border border-indigo-100 flex items-center gap-2"><Mic className="w-5 h-5"/><span className="text-xs font-bold">Speak</span></button>
                           </>
-                       )}
-                       <button onClick={() => { if(isRecording) handleAudioToggle(); else setShowMobileAiMenu(!showMobileAiMenu); }} className={`pointer-events-auto p-4 rounded-full shadow-xl text-white transition-all ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-indigo-600'}`}>
-                          {isRecording ? <Square className="w-6 h-6"/> : <Sparkles className="w-6 h-6"/>}
-                       </button>
+                      )}
+                      <button 
+                          onClick={() => { 
+                            if (isAiProcessing) return; // Do nothing if processing
+                            if (isRecording) handleAudioToggle(); 
+                            else setShowMobileAiMenu(!showMobileAiMenu); 
+                          }} 
+                          className={`pointer-events-auto p-4 rounded-full shadow-xl text-white transition-all ${
+                            isRecording ? 'bg-red-500 animate-pulse' : 
+                            isAiProcessing ? 'bg-indigo-400' : // Lighter color when processing
+                            'bg-indigo-600'
+                          }`}
+                      >
+                          {isAiProcessing ? (
+                            <RefreshCw className="w-6 h-6 animate-spin"/>
+                          ) : isRecording ? (
+                            <Square className="w-6 h-6"/>
+                          ) : (
+                            <Sparkles className="w-6 h-6"/>
+                          )}
+                      </button>
                     </div>
-                 )}
+                )}
               </div>
             </div>
           </div>
