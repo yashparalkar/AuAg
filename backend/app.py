@@ -777,9 +777,8 @@ def get_inbox_messages():
     
 
 def extract_attachments(payload):
-    """Extract attachment metadata from message payload"""
+    """Extract attachment metadata from message payload - handles both attachments and inline files"""
     if not payload:
-        print("DEBUG: No payload provided")
         return []
     
     attachments = []
@@ -791,29 +790,31 @@ def extract_attachments(payload):
             filename = part.get('filename')
             body = part.get('body', {})
             attachment_id = body.get('attachmentId')
+            mime_type = part.get('mimeType', '')
             
-            print(f"DEBUG traverse: filename={filename}, has_attachmentId={bool(attachment_id)}, mimeType={part.get('mimeType')}")
-            
+            # Check if this part has a filename AND either:
+            # 1. Has an attachmentId (separate attachment)
+            # 2. Has data in body (inline attachment)
+            # But exclude plain text/html message bodies
             if filename and attachment_id:
-                att = {
+                # This is a proper attachment or inline image
+                # We want to include it regardless of Content-Disposition
+                attachments.append({
                     'filename': filename,
-                    'mimeType': part.get('mimeType'),
+                    'mimeType': mime_type,
                     'size': body.get('size', 0),
                     'attachmentId': attachment_id
-                }
-                print(f"DEBUG: Found attachment: {att}")
-                attachments.append(att)
+                })
+                print(f"DEBUG: Found attachment: {filename} ({mime_type})")
             
+            # Recursively check nested parts
             if part.get('parts'):
                 traverse(part['parts'])
     
     if payload.get('parts'):
-        print(f"DEBUG: Payload has {len(payload.get('parts'))} parts")
         traverse(payload['parts'])
-    else:
-        print("DEBUG: Payload has no parts")
     
-    print(f"DEBUG: Total attachments extracted: {len(attachments)}")
+    print(f"DEBUG: Total attachments found: {len(attachments)}")
     return attachments
 
 @app.route('/api/scheduled/messages', methods=['GET'])
