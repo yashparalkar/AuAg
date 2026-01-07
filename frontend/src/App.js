@@ -268,13 +268,27 @@ const GmailComposeApp = () => {
       const response = await fetch(`${API_BASE}/inbox/message/${messageId}`, { credentials: 'include' });
       const data = await response.json();
       if (data.success) {
-        // --- CHANGED: Use the attachments sent from backend directly ---
-        const attachments = data.message.attachments || []; 
+        // Use attachments from response, or empty array if none
+        const attachments = data.message.attachments || [];
         
-        const complete = { ...data.message, threadId: data.message.threadId || data.message.id, attachments: attachments };
+        const complete = { 
+          ...data.message, 
+          threadId: data.message.threadId || data.message.id, 
+          attachments: attachments 
+        };
+        
+        console.log('Message loaded with attachments:', attachments); // Debug log
+        
         setSelectedMessage(complete);
         setCurrentView('message');
-        setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, isUnread: false, attachments: attachments } : msg));
+        
+        // Update the message in the list with attachments
+        setMessages(prev => prev.map(msg => 
+          msg.id === messageId 
+            ? { ...msg, isUnread: false, attachments: attachments } 
+            : msg
+        ));
+        
         if (pushHistory) {
           window.history.pushState({ view: 'message', messageId }, '', `${window.location.pathname}#message-${messageId}`);
         }

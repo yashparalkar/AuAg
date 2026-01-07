@@ -909,6 +909,9 @@ def get_message_detail(message_id):
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
+        # Extract attachments
+        attachments = extract_attachments(message['payload'])
+        
         service.users().messages().modify(
             userId='me',
             id=message_id,
@@ -925,7 +928,8 @@ def get_message_detail(message_id):
                 'to': to_email,
                 'date': date,
                 'body': body,
-                'isHtml': is_html
+                'isHtml': is_html,
+                'attachments': attachments  # ADD THIS LINE
             }
         })
 
