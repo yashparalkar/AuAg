@@ -88,7 +88,8 @@ app.secret_key = os.environ["FLASK_SECRET_KEY"]
 
 app.config.update(
     SESSION_COOKIE_SAMESITE="None",
-    SESSION_COOKIE_SECURE=True
+    SESSION_COOKIE_SECURE=True,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30)
 )
 
 
@@ -138,6 +139,7 @@ def google_callback():
         flow.fetch_token(authorization_response=request.url)
 
         creds = flow.credentials
+        session.permanent = True
         session["google_creds"] = credentials_to_dict(creds)
         
         try:
@@ -744,9 +746,6 @@ def get_inbox_messages():
                     body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8', errors='ignore')
 
                 is_unread = 'UNREAD' in message.get('labelIds', [])
-        
-                # Extract attachments for inbox list
-                attachments = extract_attachments(message['payload'])
 
                 detailed_messages.append({
                     'id': message['id'],
@@ -757,8 +756,7 @@ def get_inbox_messages():
                     'date': date,
                     'snippet': message.get('snippet', ''),
                     'body': body[:500],
-                    'isUnread': is_unread,
-                    'attachments': attachments  # ADD THIS LINE
+                    'isUnread': is_unread
                 })
 
             except Exception as e:
@@ -774,48 +772,6 @@ def get_inbox_messages():
     except Exception as e:
         print(f"Inbox fetch error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-    
-
-def extract_attachments(payload):
-    """Extract attachment metadata from message payload - handles both attachments and inline files"""
-    if not payload:
-        return []
-    
-    attachments = []
-    
-    def traverse(parts):
-        if not parts:
-            return
-        for part in parts:
-            filename = part.get('filename')
-            body = part.get('body', {})
-            attachment_id = body.get('attachmentId')
-            mime_type = part.get('mimeType', '')
-            
-            # Check if this part has a filename AND either:
-            # 1. Has an attachmentId (separate attachment)
-            # 2. Has data in body (inline attachment)
-            # But exclude plain text/html message bodies
-            if filename and attachment_id:
-                # This is a proper attachment or inline image
-                # We want to include it regardless of Content-Disposition
-                attachments.append({
-                    'filename': filename,
-                    'mimeType': mime_type,
-                    'size': body.get('size', 0),
-                    'attachmentId': attachment_id
-                })
-                print(f"DEBUG: Found attachment: {filename} ({mime_type})")
-            
-            # Recursively check nested parts
-            if part.get('parts'):
-                traverse(part['parts'])
-    
-    if payload.get('parts'):
-        traverse(payload['parts'])
-    
-    print(f"DEBUG: Total attachments found: {len(attachments)}")
-    return attachments
 
 @app.route('/api/scheduled/messages', methods=['GET'])
 def get_scheduled_messages():
@@ -924,22 +880,6 @@ def get_message_detail(message_id):
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
-        # Extract attachments
-        # Extract attachments
-        attachments = extract_attachments(message['payload'])
-        
-        # DEBUG LOGGING
-        print(f"\n{'='*60}")
-        print(f"DEBUG: Message ID: {message_id}")
-        print(f"DEBUG: Attachments found: {len(attachments)}")
-        print(f"DEBUG: Attachment details: {attachments}")
-        print(f"DEBUG: Payload keys: {message['payload'].keys()}")
-        if 'parts' in message['payload']:
-            print(f"DEBUG: Number of parts: {len(message['payload']['parts'])}")
-            for i, part in enumerate(message['payload']['parts']):
-                print(f"DEBUG: Part {i}: mimeType={part.get('mimeType')}, filename={part.get('filename')}, has_attachmentId={bool(part.get('body', {}).get('attachmentId'))}")
-        print(f"{'='*60}\n")
-        
         service.users().messages().modify(
             userId='me',
             id=message_id,
@@ -956,8 +896,7 @@ def get_message_detail(message_id):
                 'to': to_email,
                 'date': date,
                 'body': body,
-                'isHtml': is_html,
-                'attachments': attachments
+                'isHtml': is_html
             }
         })
 
