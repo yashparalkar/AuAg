@@ -825,14 +825,16 @@ def get_scheduled_messages():
 @app.route('/api/inbox/message/<message_id>', methods=['GET'])
 def get_message_detail(message_id):
     """
-    Fetch message details with ALL attachments from the entire thread.
+    Fetch message details. 
+    CRITICAL FIX: Fetches ALL attachments from the entire THREAD, 
+    not just the single message. Matches Gmail's behavior.
     """
     try:
         service = get_gmail_service_from_session()
         if not service:
             return jsonify({'error': 'Not authenticated'}), 401
 
-        # 1. Fetch the specific message
+        # 1. Fetch the specific message requested (to get Body, Date, etc.)
         current_message = service.users().messages().get(
             userId='me',
             id=message_id,
@@ -841,113 +843,96 @@ def get_message_detail(message_id):
 
         thread_id = current_message.get('threadId')
 
-        # 2. Fetch the ENTIRE Thread
+        # 2. Fetch the ENTIRE Thread (Conversation)
+        #    This ensures we find attachments sent in ANY message in this conversation.
         thread = service.users().threads().get(
             userId='me',
             id=thread_id,
             format='full'
         ).execute()
 
-        # --- IMPROVED ATTACHMENT EXTRACTION ---
-        # --- REUSABLE EXTRACTION FUNCTION (improved) ---
-        def get_attachments_from_payload(payload, message_id):
-            """
-            Return list of attachments found in a payload.
-            Each attachment dict contains:
-            - filename
-            - mimeType
-            - size
-            - attachmentId (may be None)
-            - inlineData (base64 string if present, else None)
-            - messageId (the Gmail message id where this part lived)
-            """
+        # --- REUSABLE EXTRACTION FUNCTION ---
+        def get_attachments_from_payload(payload):
             found = []
-
+            
+            # Helper to recursively search a payload tree
             def search_parts(parts):
-                local = []
+                local_found = []
                 for part in parts:
-                    body = part.get('body', {}) or {}
+                    body = part.get('body', {})
                     attachment_id = body.get('attachmentId')
-                    inline_data = body.get('data')  # base64 string for inline content
-                    filename = part.get('filename') or ''
+                    filename = part.get('filename')
                     mime_type = part.get('mimeType', 'application/octet-stream')
-                    size = int(body.get('size') or 0)
 
-                    # Heuristic: check headers for filename if missing
+                    # Heuristic: Check Content-Disposition header if filename is missing
                     if not filename:
                         for h in part.get('headers', []):
-                            if h.get('name', '').lower() == 'content-disposition' and 'filename=' in h.get('value', ''):
-                                try:
-                                    filename = h['value'].split('filename=')[1].split(';')[0].strip(' "')
-                                except Exception:
-                                    pass
+                            if h['name'].lower() == 'content-disposition' and 'filename=' in h['value']:
+                                try: filename = h['value'].split('filename=')[1].split(';')[0].strip(' "')
+                                except: pass
 
-                    # If it looks like an attachment (attachmentId OR filename OR inline data), include it
-                    if attachment_id or filename or inline_data:
-                        # Ensure filename
+                    # If it looks like an attachment, grab it
+                    if attachment_id or (filename and len(filename) > 0):
                         if not filename:
+                            # Guess extension
                             ext = '.dat'
                             if 'pdf' in mime_type: ext = '.pdf'
                             elif 'sheet' in mime_type or 'excel' in mime_type or 'xls' in mime_type: ext = '.xlsx'
-                            elif 'word' in mime_type or 'document' in mime_type: ext = '.docx'
-                            elif mime_type.startswith('image/'): ext = '.jpg'
-                            filename = f'attachment{ext}'
-
-                        local.append({
-                            'filename': filename,
-                            'mimeType': mime_type,
-                            'size': size,
-                            'attachmentId': attachment_id,   # may be None
-                            'inlineData': inline_data,      # may be None
-                            'messageId': message_id
-                        })
-
+                            elif 'word' in mime_type: ext = '.docx'
+                            elif 'image' in mime_type: ext = '.jpg'
+                            filename = f"file{ext}"
+                        
+                        if attachment_id:
+                            local_found.append({
+                                'filename': filename,
+                                'mimeType': mime_type,
+                                'size': int(body.get('size', 0)),
+                                'attachmentId': attachment_id
+                            })
+                    
                     # Recurse
                     if part.get('parts'):
-                        local.extend(search_parts(part['parts']))
+                        local_found.extend(search_parts(part['parts']))
+                return local_found
 
-                return local
-
-            # Root level body check (payload itself might be an attachment)
-            body = payload.get('body', {}) or {}
-            if body.get('attachmentId') or body.get('data'):
+            # Check root first
+            body = payload.get('body', {})
+            if body.get('attachmentId'):
+                # Root is the attachment
                 found.append({
-                    'filename': payload.get('filename') or 'attachment.dat',
+                    'filename': payload.get('filename', 'attachment.dat'),
                     'mimeType': payload.get('mimeType', ''),
-                    'size': int(body.get('size') or 0),
-                    'attachmentId': body.get('attachmentId'),
-                    'inlineData': body.get('data'),
-                    'messageId': message_id
+                    'size': int(body.get('size', 0)),
+                    'attachmentId': body.get('attachmentId')
                 })
-
-            # Parts
+            
+            # Check parts
             if payload.get('parts'):
                 found.extend(search_parts(payload['parts']))
-
+            
             return found
+        # ----------------------------------------
 
-        # 3. Aggregate attachments from ALL messages in thread
+        # 3. Aggregate Attachments from ALL messages in the thread
         all_attachments = []
-        seen_ids = set()
+        seen_ids = set() # To avoid duplicates if the same file appears multiple times
 
+        # Loop through every message in the conversation history
         for msg in thread.get('messages', []):
-            msg_id = msg.get('id')
-            msg_payload = msg.get('payload', {}) or {}
-            msg_atts = get_attachments_from_payload(msg_payload, msg_id)
-
+            msg_payload = msg.get('payload', {})
+            msg_atts = get_attachments_from_payload(msg_payload)
+            
             for att in msg_atts:
-                # Use attachmentId if present, otherwise fall back to composite key
-                key = att.get('attachmentId') or f"{msg_id}|{att['filename']}|{att.get('size',0)}"
-                if key not in seen_ids:
+                # Deduplicate based on attachmentId
+                if att['attachmentId'] not in seen_ids:
                     all_attachments.append(att)
-                    seen_ids.add(key)
+                    seen_ids.add(att['attachmentId'])
 
         print(f"[DEBUG] Thread {thread_id} | Total Aggregated Attachments: {len(all_attachments)}")
 
-        # 4. Extract body (from current message only)
+        # 4. Extract Body (Only from the requested message)
         payload = current_message.get('payload', {})
         headers = payload.get('headers', [])
-        
         subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
         from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
         to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
@@ -959,42 +944,29 @@ def get_message_detail(message_id):
         def extract_body(parts_list):
             b_plain, b_html = None, None
             for p in parts_list:
-                mime = p.get('mimeType', '')
-                body_data = p.get('body', {})
-                
-                if mime == 'text/plain' and 'data' in body_data:
-                    b_plain = base64.urlsafe_b64decode(body_data['data']).decode('utf-8', errors='ignore')
-                elif mime == 'text/html' and 'data' in body_data:
-                    b_html = base64.urlsafe_b64decode(body_data['data']).decode('utf-8', errors='ignore')
-                
-                if p.get('parts'):
+                if p.get('mimeType') == 'text/plain' and 'data' in p.get('body', {}):
+                    b_plain = base64.urlsafe_b64decode(p['body']['data']).decode('utf-8', errors='ignore')
+                elif p.get('mimeType') == 'text/html' and 'data' in p.get('body', {}):
+                    b_html = base64.urlsafe_b64decode(p['body']['data']).decode('utf-8', errors='ignore')
+                elif p.get('parts'):
                     sub_plain, sub_html = extract_body(p['parts'])
                     if not b_plain: b_plain = sub_plain
                     if not b_html: b_html = sub_html
-            
             return b_plain, b_html
 
         if payload.get('parts'):
             body_plain, body_html = extract_body(payload['parts'])
         elif 'body' in payload and 'data' in payload['body']:
             content = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
-            if payload.get('mimeType') == 'text/html':
-                body_html = content
-            else:
-                body_plain = content
+            if payload['mimeType'] == 'text/html': body_html = content
+            else: body_plain = content
         
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
-        # Mark as read
         try:
-            service.users().messages().modify(
-                userId='me', 
-                id=message_id, 
-                body={'removeLabelIds': ['UNREAD']}
-            ).execute()
-        except:
-            pass
+            service.users().messages().modify(userId='me', id=message_id, body={'removeLabelIds': ['UNREAD']}).execute()
+        except: pass
 
         return jsonify({
             'success': True,
@@ -1007,7 +979,7 @@ def get_message_detail(message_id):
                 'date': date,
                 'body': body,
                 'isHtml': is_html,
-                'attachments': all_attachments
+                'attachments': all_attachments # <--- Sending ALL attachments from the thread
             }
         })
 

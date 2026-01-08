@@ -98,65 +98,27 @@ const GmailComposeApp = () => {
     else if (diffDays < 7) return date.toLocaleDateString('en-US', { weekday: 'short' });
     else return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
-
-  const handleDownload = async (messageIdOrAtt, attachmentIdOrAtt, maybeFilename) => {
-    // New signature: allow passing the attachment object directly
-    // If the caller passes an attachment object as first arg:
-    let att;
-    if (typeof messageIdOrAtt === 'object' && messageIdOrAtt !== null) {
-      att = messageIdOrAtt;
-    } else {
-      // old signature: (messageId, attachmentId, filename)
-      att = {
-        messageId: messageIdOrAtt,
-        attachmentId: attachmentIdOrAtt,
-        filename: maybeFilename
-      };
-    }
-
-    try {
-      if (att.attachmentId) {
-        // existing flow: fetch from server
-        const response = await fetch(`${API_BASE}/email/attachment?messageId=${att.messageId || selectedMessage.id}&attachmentId=${att.attachmentId}&filename=${encodeURIComponent(att.filename)}`, {
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-        });
-        if (!response.ok) throw new Error('Download failed');
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = att.filename || 'download';
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-      } else if (att.inlineData) {
-        // inline base64: convert to blob and download client-side
-        const byteCharacters = atob(att.inlineData);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: att.mimeType || 'application/octet-stream' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = att.filename || 'download';
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-      } else {
-        throw new Error('No attachment data available');
-      }
+  const handleDownload = async (messageId, attachmentId, filename) => {
+     try {
+      const response = await fetch(`${API_BASE}/email/attachment?messageId=${messageId}&attachmentId=${attachmentId}&filename=${encodeURIComponent(filename)}`, {
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error('Download failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
     } catch (error) {
       console.error("Download error:", error);
       alert("Failed to download attachment");
     }
   };
-
   const getLastTerm = (text) => { if (!text) return ''; const parts = text.split(','); return parts[parts.length - 1].trim(); };
   const stripHtml = (html) => { const tmp = document.createElement("DIV"); tmp.innerHTML = html; return tmp.textContent || tmp.innerText || ""; };
   const replaceLastTerm = (text, newEmail) => { const parts = text.split(','); parts.pop(); parts.push(' ' + newEmail); return parts.map(p => p.trim()).filter(p => p).join(', ') + ', '; };
@@ -809,14 +771,7 @@ const GmailComposeApp = () => {
                             .filter(att => att.mimeType && att.mimeType.startsWith('image/'))
                             .map((att, index) => {
                                 // Construct the URL for the image source
-                                let imgSrc;
-                                if (att.attachmentId) {
-                                  imgSrc = `${API_BASE}/email/attachment?messageId=${selectedMessage.id}&attachmentId=${att.attachmentId}&filename=${encodeURIComponent(att.filename)}`;
-                                } else if (att.inlineData) {
-                                  imgSrc = `data:${att.mimeType};base64,${att.inlineData}`;
-                                } else {
-                                  imgSrc = ''; // fallback
-                                }
+                                const imgUrl = `${API_BASE}/email/attachment?messageId=${selectedMessage.id}&attachmentId=${att.attachmentId}&filename=${encodeURIComponent(att.filename)}`;
                                 return (
                                   <div key={`img-${index}`} className="group relative w-48 h-32 rounded-xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-md transition-all">
                                     <img 
