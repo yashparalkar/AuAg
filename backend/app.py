@@ -825,16 +825,14 @@ def get_scheduled_messages():
 @app.route('/api/inbox/message/<message_id>', methods=['GET'])
 def get_message_detail(message_id):
     """
-    Fetch message details. 
-    CRITICAL FIX: Fetches ALL attachments from the entire THREAD, 
-    not just the single message. Matches Gmail's behavior.
+    Fetch message details with ALL attachments from the entire thread.
     """
     try:
         service = get_gmail_service_from_session()
         if not service:
             return jsonify({'error': 'Not authenticated'}), 401
 
-        # 1. Fetch the specific message requested (to get Body, Date, etc.)
+        # 1. Fetch the specific message
         current_message = service.users().messages().get(
             userId='me',
             id=message_id,
@@ -843,96 +841,138 @@ def get_message_detail(message_id):
 
         thread_id = current_message.get('threadId')
 
-        # 2. Fetch the ENTIRE Thread (Conversation)
-        #    This ensures we find attachments sent in ANY message in this conversation.
+        # 2. Fetch the ENTIRE Thread
         thread = service.users().threads().get(
             userId='me',
             id=thread_id,
             format='full'
         ).execute()
 
-        # --- REUSABLE EXTRACTION FUNCTION ---
-        def get_attachments_from_payload(payload):
+        # --- IMPROVED ATTACHMENT EXTRACTION ---
+        def get_attachments_from_payload(payload, message_id_for_att):
+            """Extract attachments from a message payload"""
             found = []
             
-            # Helper to recursively search a payload tree
-            def search_parts(parts):
+            def search_parts(parts, parent_filename=None):
                 local_found = []
                 for part in parts:
                     body = part.get('body', {})
                     attachment_id = body.get('attachmentId')
-                    filename = part.get('filename')
+                    filename = part.get('filename', '')
                     mime_type = part.get('mimeType', 'application/octet-stream')
+                    size = body.get('size', 0)
 
-                    # Heuristic: Check Content-Disposition header if filename is missing
+                    # Check Content-Disposition header for filename
                     if not filename:
                         for h in part.get('headers', []):
-                            if h['name'].lower() == 'content-disposition' and 'filename=' in h['value']:
-                                try: filename = h['value'].split('filename=')[1].split(';')[0].strip(' "')
-                                except: pass
-
-                    # If it looks like an attachment, grab it
-                    if attachment_id or (filename and len(filename) > 0):
-                        if not filename:
-                            # Guess extension
-                            ext = '.dat'
-                            if 'pdf' in mime_type: ext = '.pdf'
-                            elif 'sheet' in mime_type or 'excel' in mime_type or 'xls' in mime_type: ext = '.xlsx'
-                            elif 'word' in mime_type: ext = '.docx'
-                            elif 'image' in mime_type: ext = '.jpg'
-                            filename = f"file{ext}"
-                        
-                        if attachment_id:
-                            local_found.append({
-                                'filename': filename,
-                                'mimeType': mime_type,
-                                'size': int(body.get('size', 0)),
-                                'attachmentId': attachment_id
-                            })
+                            if h['name'].lower() == 'content-disposition':
+                                import re
+                                # Try to extract filename from header
+                                match = re.search(r'filename[*]?=(?:"([^"]+)"|([^;\s]+))', h['value'])
+                                if match:
+                                    filename = match.group(1) or match.group(2)
+                                    filename = filename.strip()
+                                    break
                     
-                    # Recurse
+                    # CRITICAL FIX: Check if this part has an attachmentId OR looks like an attachment
+                    is_attachment = False
+                    
+                    # Case 1: Has explicit attachmentId
+                    if attachment_id:
+                        is_attachment = True
+                    
+                    # Case 2: Has filename and is not a text/html or text/plain inline part
+                    elif filename and mime_type not in ['text/plain', 'text/html']:
+                        is_attachment = True
+                    
+                    # Case 3: Has size > 0 and filename (even if small)
+                    elif filename and size > 0:
+                        is_attachment = True
+
+                    if is_attachment:
+                        # Generate filename if missing
+                        if not filename:
+                            ext = '.dat'
+                            if 'pdf' in mime_type.lower():
+                                ext = '.pdf'
+                            elif 'sheet' in mime_type.lower() or 'excel' in mime_type.lower():
+                                ext = '.xlsx'
+                            elif 'word' in mime_type.lower() or 'document' in mime_type.lower():
+                                ext = '.docx'
+                            elif 'image' in mime_type.lower():
+                                if 'jpeg' in mime_type or 'jpg' in mime_type:
+                                    ext = '.jpg'
+                                elif 'png' in mime_type:
+                                    ext = '.png'
+                                elif 'gif' in mime_type:
+                                    ext = '.gif'
+                            elif 'zip' in mime_type.lower():
+                                ext = '.zip'
+                            elif 'text' in mime_type.lower():
+                                ext = '.txt'
+                            
+                            filename = f"attachment{ext}"
+                        
+                        local_found.append({
+                            'filename': filename,
+                            'mimeType': mime_type,
+                            'size': int(size),
+                            'attachmentId': attachment_id,
+                            'messageId': message_id_for_att  # Store which message this came from
+                        })
+                        
+                        print(f"   📎 Found: {filename} ({mime_type}) - AttID: {attachment_id[:20] if attachment_id else 'None'}")
+                    
+                    # Recurse into nested parts
                     if part.get('parts'):
-                        local_found.extend(search_parts(part['parts']))
+                        local_found.extend(search_parts(part['parts'], filename or parent_filename))
+                
                 return local_found
 
-            # Check root first
-            body = payload.get('body', {})
-            if body.get('attachmentId'):
-                # Root is the attachment
-                found.append({
-                    'filename': payload.get('filename', 'attachment.dat'),
-                    'mimeType': payload.get('mimeType', ''),
-                    'size': int(body.get('size', 0)),
-                    'attachmentId': body.get('attachmentId')
-                })
-            
-            # Check parts
+            # Check root payload
             if payload.get('parts'):
                 found.extend(search_parts(payload['parts']))
+            else:
+                # Single-part message
+                body = payload.get('body', {})
+                if body.get('attachmentId'):
+                    found.append({
+                        'filename': payload.get('filename', 'attachment.dat'),
+                        'mimeType': payload.get('mimeType', 'application/octet-stream'),
+                        'size': int(body.get('size', 0)),
+                        'attachmentId': body.get('attachmentId'),
+                        'messageId': message_id_for_att
+                    })
             
             return found
-        # ----------------------------------------
 
-        # 3. Aggregate Attachments from ALL messages in the thread
+        # 3. Aggregate attachments from ALL messages in thread
         all_attachments = []
-        seen_ids = set() # To avoid duplicates if the same file appears multiple times
+        seen_ids = set()
 
-        # Loop through every message in the conversation history
+        print(f"\n[DEBUG] Processing thread {thread_id}")
+        
         for msg in thread.get('messages', []):
+            msg_id = msg.get('id')
             msg_payload = msg.get('payload', {})
-            msg_atts = get_attachments_from_payload(msg_payload)
+            
+            print(f"  Checking message: {msg_id}")
+            msg_atts = get_attachments_from_payload(msg_payload, msg_id)
             
             for att in msg_atts:
-                # Deduplicate based on attachmentId
-                if att['attachmentId'] not in seen_ids:
+                # Deduplicate based on attachmentId (or filename if no ID)
+                dedup_key = att['attachmentId'] if att['attachmentId'] else f"{att['filename']}_{att['size']}"
+                
+                if dedup_key not in seen_ids:
                     all_attachments.append(att)
-                    seen_ids.add(att['attachmentId'])
+                    seen_ids.add(dedup_key)
 
         print(f"[DEBUG] Thread {thread_id} | Total Aggregated Attachments: {len(all_attachments)}")
 
-        # 4. Extract Body (Only from the requested message)
+        # 4. Extract body (from current message only)
         payload = current_message.get('payload', {})
         headers = payload.get('headers', [])
+        
         subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
         from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
         to_email = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
@@ -944,29 +984,42 @@ def get_message_detail(message_id):
         def extract_body(parts_list):
             b_plain, b_html = None, None
             for p in parts_list:
-                if p.get('mimeType') == 'text/plain' and 'data' in p.get('body', {}):
-                    b_plain = base64.urlsafe_b64decode(p['body']['data']).decode('utf-8', errors='ignore')
-                elif p.get('mimeType') == 'text/html' and 'data' in p.get('body', {}):
-                    b_html = base64.urlsafe_b64decode(p['body']['data']).decode('utf-8', errors='ignore')
-                elif p.get('parts'):
+                mime = p.get('mimeType', '')
+                body_data = p.get('body', {})
+                
+                if mime == 'text/plain' and 'data' in body_data:
+                    b_plain = base64.urlsafe_b64decode(body_data['data']).decode('utf-8', errors='ignore')
+                elif mime == 'text/html' and 'data' in body_data:
+                    b_html = base64.urlsafe_b64decode(body_data['data']).decode('utf-8', errors='ignore')
+                
+                if p.get('parts'):
                     sub_plain, sub_html = extract_body(p['parts'])
                     if not b_plain: b_plain = sub_plain
                     if not b_html: b_html = sub_html
+            
             return b_plain, b_html
 
         if payload.get('parts'):
             body_plain, body_html = extract_body(payload['parts'])
         elif 'body' in payload and 'data' in payload['body']:
             content = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
-            if payload['mimeType'] == 'text/html': body_html = content
-            else: body_plain = content
+            if payload.get('mimeType') == 'text/html':
+                body_html = content
+            else:
+                body_plain = content
         
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
+        # Mark as read
         try:
-            service.users().messages().modify(userId='me', id=message_id, body={'removeLabelIds': ['UNREAD']}).execute()
-        except: pass
+            service.users().messages().modify(
+                userId='me', 
+                id=message_id, 
+                body={'removeLabelIds': ['UNREAD']}
+            ).execute()
+        except:
+            pass
 
         return jsonify({
             'success': True,
@@ -979,7 +1032,7 @@ def get_message_detail(message_id):
                 'date': date,
                 'body': body,
                 'isHtml': is_html,
-                'attachments': all_attachments # <--- Sending ALL attachments from the thread
+                'attachments': all_attachments
             }
         })
 
