@@ -824,7 +824,7 @@ def get_scheduled_messages():
 
 @app.route('/api/inbox/message/<message_id>', methods=['GET'])
 def get_message_detail(message_id):
-    """Fetch full message details with Debugging for Attachments"""
+    """Fetch full message details with Root-Level Attachment Check"""
     try:
         service = get_gmail_service_from_session()
         if not service:
@@ -836,65 +836,67 @@ def get_message_detail(message_id):
             format='full'
         ).execute()
 
-        # --- DEBUG: ROBUST ATTACHMENT EXTRACTOR ---
-        def get_attachments(parts):
-            atts = []
-            if not parts: return atts
+        payload = message.get('payload', {})
+
+        # --- DEBUG: Recursive Extractor that handles Root Payload ---
+        def extract_attachments_recursive(part):
+            found = []
             
-            for part in parts:
-                body = part.get('body', {})
-                attachment_id = body.get('attachmentId')
-                mime_type = part.get('mimeType', 'application/octet-stream')
-                filename = part.get('filename')
+            # 1. INSPECT CURRENT PART
+            body = part.get('body', {})
+            attachment_id = body.get('attachmentId')
+            mime_type = part.get('mimeType', 'application/octet-stream')
+            filename = part.get('filename')
+
+            # Debug Log
+            # print(f"[DEBUG SCAN] Mime: {mime_type} | ID: {bool(attachment_id)} | File: {filename}")
+
+            # Check Headers for filename if missing (Header 'Content-Disposition')
+            if not filename:
+                for h in part.get('headers', []):
+                    if h['name'].lower() == 'content-disposition' and 'filename=' in h['value']:
+                        try:
+                            filename = h['value'].split('filename=')[1].split(';')[0].strip(' "')
+                        except: pass
+
+            # DECISION: Is this an attachment?
+            # It is if it has an ID, OR if it has a filename
+            if attachment_id or (filename and len(filename) > 0):
                 
-                # Check headers for filename if main field is empty
+                # Force a filename if missing
                 if not filename:
-                    for h in part.get('headers', []):
-                        if h['name'].lower() == 'content-disposition' and 'filename=' in h['value']:
-                            try:
-                                filename = h['value'].split('filename=')[1].split(';')[0].strip(' "')
-                            except: pass
+                    ext = '.dat'
+                    if 'pdf' in mime_type: ext = '.pdf'
+                    elif 'spreadsheet' in mime_type or 'excel' in mime_type or 'xls' in mime_type: ext = '.xlsx'
+                    elif 'word' in mime_type or 'document' in mime_type: ext = '.docx'
+                    elif 'image' in mime_type: ext = '.jpg'
+                    elif 'csv' in mime_type: ext = '.csv'
+                    filename = f"file{ext}"
 
-                # LOGGING: See this in your Render Logs
-                if attachment_id or (filename and filename != ''):
-                    print(f"[DEBUG] Found Part: Mime={mime_type}, File={filename}, ID={str(attachment_id)[:10]}...")
-
-                # LOGIC: If it has an ID, we accept it. No exceptions.
+                # If we have an ID, it's downloadable. Add it.
                 if attachment_id:
-                    # If filename is STILL missing, force a name based on mimetype
-                    if not filename:
-                        ext = '.dat'
-                        if 'pdf' in mime_type: ext = '.pdf'
-                        elif 'spreadsheet' in mime_type or 'excel' in mime_type or 'xls' in mime_type: ext = '.xlsx'
-                        elif 'word' in mime_type or 'document' in mime_type: ext = '.docx'
-                        elif 'image' in mime_type: ext = '.jpg'
-                        elif 'csv' in mime_type: ext = '.csv'
-                        elif 'text/plain' in mime_type: ext = '.txt'
-                        filename = f"attachment{ext}"
-                        print(f"[DEBUG] Renamed missing file to: {filename}")
-
-                    atts.append({
+                    print(f"[DEBUG] FOUND ATTACHMENT: {filename}")
+                    found.append({
                         'filename': filename,
                         'mimeType': mime_type,
                         'size': int(body.get('size', 0)),
                         'attachmentId': attachment_id
                     })
-                
-                # RECURSION: Check inside this part for children
-                if part.get('parts'):
-                    atts.extend(get_attachments(part['parts']))
+
+            # 2. RECURSE: Check children
+            if part.get('parts'):
+                for child in part['parts']:
+                    found.extend(extract_attachments_recursive(child))
             
-            return atts
+            return found
         # ---------------------------------------------------------
 
-        payload = message.get('payload', {})
-        parts = payload.get('parts', [])
+        # KEY CHANGE: Pass the WHOLE payload, not just payload['parts']
+        attachments = extract_attachments_recursive(payload)
         
-        # Extract the attachments
-        attachments = get_attachments(parts)
         print(f"[DEBUG] Total Attachments found for {message_id}: {len(attachments)}")
 
-        # Extract Body Logic (Standard)
+        # --- Body Extraction (Standard) ---
         headers = payload.get('headers', [])
         subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(No Subject)')
         from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
@@ -904,7 +906,6 @@ def get_message_detail(message_id):
         body_html = ''
         body_plain = ''
         
-        # Simple Body Extraction
         def extract_body(parts_list):
             b_plain, b_html = None, None
             for p in parts_list:
@@ -918,9 +919,11 @@ def get_message_detail(message_id):
                     if not b_html: b_html = sub_html
             return b_plain, b_html
 
-        if parts:
-            body_plain, body_html = extract_body(parts)
+        # Extract body from parts if they exist, otherwise check root payload
+        if payload.get('parts'):
+            body_plain, body_html = extract_body(payload['parts'])
         elif 'body' in payload and 'data' in payload['body']:
+            # Root payload is the body
             content = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
             if payload['mimeType'] == 'text/html': body_html = content
             else: body_plain = content
@@ -928,11 +931,8 @@ def get_message_detail(message_id):
         body = body_html if body_html else body_plain
         is_html = bool(body_html)
 
-        # Mark as read
         try:
-            service.users().messages().modify(
-                userId='me', id=message_id, body={'removeLabelIds': ['UNREAD']}
-            ).execute()
+            service.users().messages().modify(userId='me', id=message_id, body={'removeLabelIds': ['UNREAD']}).execute()
         except: pass
 
         return jsonify({
@@ -955,7 +955,6 @@ def get_message_detail(message_id):
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
-    
 
 
 summarizer_service = EmailSummarizer()
