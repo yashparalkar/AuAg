@@ -59,3 +59,4 @@ python-dotenv
 flask-apscheduler
 python-dateutil
 pytz
+google-genai

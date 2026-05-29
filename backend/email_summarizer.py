@@ -1,4 +1,4 @@
-from openai import OpenAI
+from google import genai
 import os
 
 class EmailSummarizer:
@@ -17,23 +17,22 @@ class EmailSummarizer:
         "Be accurate, neutral, and brief."
     )
 
-    def __init__(self,model: str = "gpt-4.1-nano"):
-        # self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.client = OpenAI(api_key = os.environ.get("OPENAI_API_KEY"))
+    def __init__(self, model: str = "gemini-2.0-flash"):
+        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         self.model = model
 
     def summarize(self, email_text: str) -> str:
         try:
-            response = self.client.chat.completions.create(
+            response = self.client.models.generate_content(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": email_text}
-                ],
-                temperature=0.0
+                contents=email_text,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=self.SYSTEM_PROMPT,
+                    temperature=0.0,
+                ),
             )
-            return response.choices[0].message.content.strip()
-            
+            return response.text.strip()
+
         except Exception as e:
-            print(f"OpenAI API Error: {e}")
+            print(f"Gemini API Error: {e}")
             return "Error: Could not generate summary due to an API issue."

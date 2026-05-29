@@ -1,16 +1,15 @@
-from openai import OpenAI
+from google import genai
 import json
 import sys
 from dotenv import load_dotenv
-import os       
+import os
 
 load_dotenv()
 
 class EmailWriter:
     def __init__(self, api_key=None):
-        """Initialize the Email Writer with OpenAI client."""
-        # self.client = OpenAI(api_key = os.getenv("OPENAI_API_KEY"))
-        self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        """Initialize the Email Writer with Gemini client."""
+        self.client = genai.Client(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
         self.system_prompt = """You are a professional email writing assistant. Your sole purpose is to generate well-crafted emails based on the user's requirements.
 
 ## Response Format
@@ -63,34 +62,33 @@ When users request changes:
 6. Never refuse to write an email unless it's clearly for harmful purposes"""
         
         self.conversation_history = []
-        self.model = "gpt-4.1-nano"
-    
+        self.model = "gemini-3.5-flash"
+
     def generate_email(self, user_input):
         """Generate or refine email based on user input."""
-        self.conversation_history.append({
-            "role": "user",
-            "content": user_input
-        })
-        
-        messages = [{"role": "system", "content": self.system_prompt}] + self.conversation_history
-        
+        self.conversation_history.append(
+            genai.types.Content(role="user", parts=[genai.types.Part(text=user_input)])
+        )
+
         try:
-            response = self.client.chat.completions.create(
+            response = self.client.models.generate_content(
                 model=self.model,
-                messages=messages,
-                response_format={"type": "json_object"},
+                contents=self.conversation_history,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=self.system_prompt,
+                    response_mime_type="application/json",
+                ),
             )
-            
-            assistant_message = response.choices[0].message.content
-            
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": assistant_message
-            })
-            
+
+            assistant_message = response.text
+
+            self.conversation_history.append(
+                genai.types.Content(role="model", parts=[genai.types.Part(text=assistant_message)])
+            )
+
             email_data = json.loads(assistant_message)
             return email_data
-            
+
         except json.JSONDecodeError as e:
             print(f"Error: Failed to parse JSON response. {e}")
             return None
@@ -180,6 +178,5 @@ def run_email_writer(api_key=None):
 
 
 if __name__ == "__main__":
-    # Run the email writer
     writer = EmailWriter()
     writer.run()
