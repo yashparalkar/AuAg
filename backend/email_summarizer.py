@@ -17,7 +17,7 @@ class EmailSummarizer:
         "Be accurate, neutral, and brief."
     )
 
-    def __init__(self, model: str = "gemini-2.0-flash"):
+    def __init__(self, model: str = "gemini-3.5-flash"):
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         self.model = model
 
