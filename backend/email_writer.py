@@ -1,4 +1,4 @@
-from google import genai
+from openai import OpenAI
 import json
 import sys
 from dotenv import load_dotenv
@@ -8,8 +8,11 @@ load_dotenv()
 
 class EmailWriter:
     def __init__(self, api_key=None):
-        """Initialize the Email Writer with Gemini client."""
-        self.client = genai.Client(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
+        """Initialize the Email Writer with the AICredits client."""
+        self.client = OpenAI(
+            base_url=os.environ.get("AICREDITS_BASE_URL", "https://api.aicredits.in/v1"),
+            api_key=api_key or os.environ.get("AICREDITS_API_KEY"),
+        )
         self.system_prompt = """You are a professional email writing assistant. Your sole purpose is to generate well-crafted emails based on the user's requirements.
 
 ## Response Format
@@ -62,28 +65,28 @@ When users request changes:
 6. Never refuse to write an email unless it's clearly for harmful purposes"""
         
         self.conversation_history = []
-        self.model = "gemini-3.5-flash"
+        self.model = "openai/gpt-5-nano"
 
     def generate_email(self, user_input):
         """Generate or refine email based on user input."""
         self.conversation_history.append(
-            genai.types.Content(role="user", parts=[genai.types.Part(text=user_input)])
+            {"role": "user", "content": user_input}
         )
 
         try:
-            response = self.client.models.generate_content(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                contents=self.conversation_history,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction=self.system_prompt,
-                    response_mime_type="application/json",
-                ),
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    *self.conversation_history,
+                ],
+                response_format={"type": "json_object"},
             )
 
-            assistant_message = response.text
+            assistant_message = response.choices[0].message.content
 
             self.conversation_history.append(
-                genai.types.Content(role="model", parts=[genai.types.Part(text=assistant_message)])
+                {"role": "assistant", "content": assistant_message}
             )
 
             email_data = json.loads(assistant_message)

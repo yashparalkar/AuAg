@@ -111,8 +111,10 @@ Behavior rules (strict):
 Be deterministic, conservative in inference, and focused on clarity and completeness.
 """
         
-        # self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.client = OpenAI(api_key = os.environ.get("OPENAI_API_KEY"))
+        self.client = OpenAI(
+            base_url=os.environ.get("AICREDITS_BASE_URL", "https://api.aicredits.in/v1"),
+            api_key=os.environ.get("AICREDITS_API_KEY"),
+        )
         self.json_state = {
             "recipient_name": None,
             "recipient_relation": None,
@@ -129,7 +131,7 @@ Be deterministic, conservative in inference, and focused on clarity and complete
         chat_history.append({"role": "user", "content": user_input})
 
         response = self.client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="openai/gpt-5-nano",
             messages=chat_history,
         )
 
@@ -170,7 +172,7 @@ Be deterministic, conservative in inference, and focused on clarity and complete
 
             try:
                 response = self.client.chat.completions.create(
-                    model="gpt-4.1-nano",
+                    model="openai/gpt-5-nano",
                     messages=chat_history,
                     # temperature=0.7
                 )
@@ -211,7 +213,7 @@ Be deterministic, conservative in inference, and focused on clarity and complete
         self.chat_history.append({"role": "user", "content": user_input})
 
         response = self.client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="openai/gpt-5-nano",
             messages=self.chat_history
         )
 

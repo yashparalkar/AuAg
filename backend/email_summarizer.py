@@ -1,5 +1,8 @@
-from google import genai
+from openai import OpenAI
+from dotenv import load_dotenv
 import os
+
+load_dotenv()
 
 class EmailSummarizer:
     SYSTEM_PROMPT = (
@@ -17,22 +20,25 @@ class EmailSummarizer:
         "Be accurate, neutral, and brief."
     )
 
-    def __init__(self, model: str = "gemini-3.5-flash"):
-        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    def __init__(self, model: str = "openai/gpt-5-nano"):
+        self.client = OpenAI(
+            base_url=os.environ.get("AICREDITS_BASE_URL", "https://api.aicredits.in/v1"),
+            api_key=os.environ.get("AICREDITS_API_KEY"),
+        )
         self.model = model
 
     def summarize(self, email_text: str) -> str:
         try:
-            response = self.client.models.generate_content(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                contents=email_text,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction=self.SYSTEM_PROMPT,
-                    temperature=0.0,
-                ),
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": email_text},
+                ],
+                temperature=0.0,
             )
-            return response.text.strip()
+            return response.choices[0].message.content.strip()
 
         except Exception as e:
-            print(f"Gemini API Error: {e}")
+            print(f"AICredits API Error: {e}")
             return "Error: Could not generate summary due to an API issue."
