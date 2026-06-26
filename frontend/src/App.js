@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar, Menu, LogOut, OctagonAlert, Search, FileSpreadsheet, FileImage, FileIcon, File } from 'lucide-react';
+import { Mail, Send, User, X, Check, Inbox, RefreshCw, ArrowLeft, Clock, Mic, Square, Reply, Sparkles, FileText, Paperclip, Download, Plus, Keyboard, ChevronUp, Calendar, Menu, LogOut, OctagonAlert, Search, FileSpreadsheet, FileImage, File } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || '';
 
@@ -377,13 +377,17 @@ const GmailComposeApp = () => {
   useEffect(() => {
     if (!mediatorState || !prevMediatorState) return;
     if (mediatorState.recipient_name && mediatorState.recipient_name !== prevMediatorState.recipient_name && mediatorState.recipient_name !== toField) { setToField(mediatorState.recipient_name); }
+    if (!mediatorState.recipient_name && mediatorState.recipient_relation && mediatorState.recipient_relation !== prevMediatorState.recipient_relation && !toField) {
+      fetch(`${API_BASE}/relation/resolve?relation=${encodeURIComponent(mediatorState.recipient_relation)}`, { credentials: 'include' })
+        .then(r => r.json()).then(d => { if (d.email) setToField(prev => prev ? prev : d.email); }).catch(() => {});
+    }
     const prevCc = JSON.stringify(prevMediatorState.cc || []); const newCc = JSON.stringify(mediatorState.cc || []);
     if (newCc !== prevCc && Array.isArray(mediatorState.cc) && mediatorState.cc.length > 0) { const emails = mediatorState.cc.join(', ') + ', '; setCcField(prev => { const c = prev ? prev.trim() : ''; return c ? (c.endsWith(',') ? `${c} ${emails}` : `${c}, ${emails}`) : emails; }); setShowCcBcc(true); }
     const prevBcc = JSON.stringify(prevMediatorState.bcc || []); const newBcc = JSON.stringify(mediatorState.bcc || []);
     if (newBcc !== prevBcc && Array.isArray(mediatorState.bcc) && mediatorState.bcc.length > 0) { const emails = mediatorState.bcc.join(', ') + ', '; setBccField(prev => { const c = prev ? prev.trim() : ''; return c ? (c.endsWith(',') ? `${c} ${emails}` : `${c}, ${emails}`) : emails; }); setShowCcBcc(true); }
     if (mediatorState.description && mediatorState.description !== prevMediatorState.description) { setEmailGenerated(false); }
   }, [mediatorState, prevMediatorState, toField]);
-  useEffect(() => { if (!showCompose) return; const loadComposeContext = async () => { try { const response = await fetch(`${API_BASE}/compose/context`, { credentials: 'include' }); const data = await response.json(); if (data.recipient_name) setToField(data.recipient_name); setComposeContext(data); } catch (err) { console.error('Failed to load compose context', err); } }; loadComposeContext(); }, [showCompose]);
+  useEffect(() => { if (!showCompose) return; const loadComposeContext = async () => { try { const response = await fetch(`${API_BASE}/compose/context`, { credentials: 'include' }); const data = await response.json(); if (data.recipient_name) setToField(data.recipient_name); else if (data.recipient_email) setToField(data.recipient_email); setComposeContext(data); } catch (err) { console.error('Failed to load compose context', err); } }; loadComposeContext(); }, [showCompose]);
   useEffect(() => { if (!showCompose || emailGenerated || !mediatorState || !mediatorState.description) return; const generateEmail = async () => { setLoading(true); setStatus('Generating email...'); try { const response = await fetch(`${API_BASE}/email/generate`, { method: 'POST', credentials: 'include' }); const data = await response.json(); if (data.success) { setSubject(data.subject); setBody(data.body); setEmailGenerated(true); } } catch (err) { console.error(err); } finally { setLoading(false); setStatus(''); } }; generateEmail(); }, [showCompose, mediatorState, emailGenerated]);
 
   useEffect(() => {
@@ -833,10 +837,11 @@ const GmailComposeApp = () => {
                         <p className="text-indigo-900 text-sm leading-relaxed">{summary}</p>
                       </div>
                     )}
-                    <div className="prose prose-sm max-w-none text-slate-800">
+                    {/* --- FORCE OVERRIDE STYLES FOR EMAIL BODY --- */}
+                    <div className="prose prose-sm max-w-none text-slate-800 !text-sm [&_*]:!text-sm [&_a]:!text-blue-600 [&_a]:!underline hover:[&_a]:!text-blue-500">
                        {selectedMessage.isHtml 
                          ? <div dangerouslySetInnerHTML={{ __html: selectedMessage.body }} /> 
-                         : <pre className="whitespace-pre-wrap font-sans">{selectedMessage.body}</pre>}
+                         : <pre className="whitespace-pre-wrap font-sans !text-sm">{selectedMessage.body}</pre>}
                     </div>
                     {inlineReplyOpen && (
                       <div className="mt-8 border border-slate-200 rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-bottom-5">

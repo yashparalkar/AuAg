@@ -190,7 +190,7 @@ Be deterministic, conservative in inference, and focused on clarity and complete
                 try:
                     self.json_state = json.loads(assistant_message)
                     print("\nExtracted JSON:")
-                    print(json.dumps(self.json_state, indent=2))
+                    print(json.dumps(self.json_state['recipient_relation'], indent=2))
                     print()
                 except json.JSONDecodeError:
                     print("\nError: Assistant response is not valid JSON.")

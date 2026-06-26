@@ -580,15 +580,48 @@ def get_mediator():
     return mediators[session_id]
 
 
+def resolve_relation_email(state):
+    """If only a relation is known (no explicit recipient name), look it up in the
+    user's saved relations and return (first_email, all_emails). Returns (None, None)
+    when a name is present, no relation is set, or nothing is saved."""
+    if state.get("recipient_name"):
+        return None, None
+    relation = state.get("recipient_relation")
+    if not relation:
+        return None, None
+    emails = get_email_by_relation(get_current_user_email(), relation)
+    if not emails:
+        return None, None
+    return emails[0], emails
+
+
 @app.route('/api/compose/context', methods=['GET'])
 def compose_context():
     mediator = get_mediator()
     state = mediator.json_state
 
+    recipient_email, recipient_emails = resolve_relation_email(state)
+
     return jsonify({
         "recipient_name": state.get("recipient_name"),
+        "recipient_relation": state.get("recipient_relation"),
         "recipient_option_index": state.get("recipient_options"),
+        "recipient_email": recipient_email,
+        "recipient_emails": recipient_emails,
         "description": state.get("description")
+    })
+
+
+@app.route('/api/relation/resolve', methods=['GET'])
+def relation_resolve():
+    """Resolve a relation label (e.g. 'professor') to saved email(s) for the
+    current user. Used by the frontend to auto-fill the To field live when the
+    mediator extracts a relation but no recipient name."""
+    relation = request.args.get('relation')
+    emails = get_email_by_relation(get_current_user_email(), relation) if relation else []
+    return jsonify({
+        "email": emails[0] if emails else None,
+        "emails": emails
     })
 
 

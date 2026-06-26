@@ -172,6 +172,64 @@ When users request changes:
             except Exception as e:
                 print(f"\n❌ Unexpected error: {e}\n")
 
+    def run_with_state(self):
+        """Interactive CLI that runs the EmailMediator first and prints its
+        json_state each turn, then feeds the description to the writer.
+
+        Mirrors the app.py pipeline: advance() -> build description -> generate_email().
+        """
+        from info_extractor import EmailMediator
+        mediator = EmailMediator()
+
+        print("="*60)
+        print("📧 EMAIL WRITING ASSISTANT (with extractor state)")
+        print("="*60)
+        print("\nType your request. Commands: reset(), exit()\n")
+
+        while True:
+            try:
+                user_input = input("You: ").strip()
+
+                if user_input.lower() in ['exit()', 'quit()', 'exit', 'quit']:
+                    print("\n👋 Goodbye! Happy emailing!")
+                    sys.exit(0)
+
+                if user_input.lower() in ['reset()', 'reset']:
+                    self.reset_conversation()
+                    mediator = EmailMediator()
+                    continue
+
+                if not user_input:
+                    continue
+
+                # 1) Run the extractor and show its json_state
+                state = mediator.advance(user_input)
+                print("\n🧩 json_state:")
+                print(json.dumps(state, indent=2))
+
+                # 2) Build the description exactly like app.py does
+                description = state.get("description")
+                if not description:
+                    print("\nℹ️  No description yet — give more detail (recipient/purpose).\n")
+                    continue
+                if state.get("recipient_name"):
+                    description += "recipient_name: " + state.get("recipient_name")
+                revision = state.get("mail_revision")
+                if revision:
+                    description += f"\n\nPlease revise the email as follows:\n{revision}"
+
+                # 3) Generate and display the email
+                print("\n⏳ Generating email...")
+                email_data = self.generate_email(description)
+                if email_data:
+                    self.display_email(email_data)
+
+            except (KeyboardInterrupt, EOFError):
+                print("\n\n👋 Goodbye! Happy emailing!")
+                sys.exit(0)
+            except Exception as e:
+                print(f"\n❌ Unexpected error: {e}\n")
+
 
 # Function-based approach
 def run_email_writer(api_key=None):
@@ -180,6 +238,20 @@ def run_email_writer(api_key=None):
     writer.run()
 
 
+# if __name__ == "__main__":
+#     writer = EmailWriter()
+#     writer.run()
+
 if __name__ == "__main__":
+    import sys
     writer = EmailWriter()
-    writer.run()
+    if "--test" in sys.argv:
+        email = writer.generate_email(
+            "Write a short email to my manager asking to reschedule our 3pm meeting to 4pm tomorrow"
+        )
+        writer.display_email(email)
+        print("RAW:", email)
+    elif "--state" in sys.argv:
+        writer.run_with_state()
+    else:
+        writer.run()
